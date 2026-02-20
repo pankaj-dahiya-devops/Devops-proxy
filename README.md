@@ -162,21 +162,24 @@ LoadProfile(s)
 | EC2_LOW_CPU | avg CPU > 0% and < 10% over lookback period | MEDIUM | $30/mo placeholder |
 | EBS_UNATTACHED | volume state == "available", not attached | MEDIUM | SizeGB × $0.08/mo |
 | EBS_GP2_LEGACY | volume type == "gp2" | LOW | SizeGB × $0.02/mo |
+| NAT_LOW_TRAFFIC | state == "available" and BytesOutToDestination < 1 GB | HIGH | $32/mo (fixed hourly cost) |
 
 ### Test coverage
 
-51 unit tests across rule engine and engine core:
+74 unit tests across rule engine, engine core, and CLI:
 - `EBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
 - `EBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
 - `EC2LowCPURule` — 11 subtests (CW sentinel, threshold boundary, state filtering)
+- `NATLowTrafficRule` — 12 subtests (0/0.5GB flagged, 1.0/5GB not flagged, state filtering, fields)
 - `mergeFindings` — 12 tests (dedup, severity upgrade, savings sum, metadata merge, input immutability)
 - `computeSummary` — 5 tests (severity counts, INFO handling, savings total)
+- `printSummary` — 6 tests + `topFindingsBySavings` — 5 tests + `writeReportToFile` — 3 tests
 
 ---
 
 ## Roadmap
 
-- [ ] NAT Gateway high-transfer detection (CloudWatch BytesOutToDestination)
+- [x] NAT Gateway low-traffic detection (CloudWatch BytesOutToDestination)
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
 - [ ] RDS idle instance detection
