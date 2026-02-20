@@ -44,6 +44,12 @@ go build -o dp ./cmd/dp
 
 # Explicit regions, 14-day lookback
 ./dp aws audit cost --profile prod --region us-east-1 --region eu-west-1 --days 14
+
+# Compact summary to stdout, also save full JSON report to file
+./dp aws audit cost --profile prod --summary --output report.json
+
+# Table output to stdout and full JSON saved to file
+./dp aws audit cost --output /tmp/audit.json
 ```
 
 ### Flags
@@ -55,6 +61,8 @@ go build -o dp ./cmd/dp
 | `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
 | `--days` | int | `30` | Lookback window for cost and CloudWatch metric queries |
 | `--report` | string | `table` | Output format: `table` or `json` |
+| `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
+| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 
 ---
 
