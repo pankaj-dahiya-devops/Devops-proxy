@@ -94,3 +94,67 @@ func collectCostSummary(
 		ServiceBreakdown: breakdown,
 	}, nil
 }
+
+// collectEC2InstanceCosts calls Cost Explorer GetCostAndUsage grouped by
+// RESOURCE_ID, filtered to EC2 Compute only, and returns a map of
+// instanceID → aggregated monthly cost in USD across all returned time periods.
+//
+// Non-fatal: if the CE call fails, returns an empty map and the error.
+// Callers must treat a missing entry (cost == 0) as "cost unknown" and skip
+// any rules that depend on accurate cost data.
+func collectEC2InstanceCosts(
+	ctx context.Context,
+	client costCEClient,
+	start, end string,
+) (map[string]float64, error) {
+	costs := make(map[string]float64)
+
+	var nextToken *string
+	for {
+		out, err := client.GetCostAndUsage(ctx, &ce.GetCostAndUsageInput{
+			TimePeriod: &cetypes.DateInterval{
+				Start: aws.String(start),
+				End:   aws.String(end),
+			},
+			Granularity: cetypes.GranularityMonthly,
+			Metrics:     []string{"UnblendedCost"},
+			Filter: &cetypes.Expression{
+				Dimensions: &cetypes.DimensionValues{
+					Key:    cetypes.DimensionService,
+					Values: []string{"Amazon Elastic Compute Cloud - Compute"},
+				},
+			},
+			GroupBy: []cetypes.GroupDefinition{
+				{
+					Key:  aws.String("RESOURCE_ID"),
+					Type: cetypes.GroupDefinitionTypeDimension,
+				},
+			},
+			NextPageToken: nextToken,
+		})
+		if err != nil {
+			return costs, fmt.Errorf("GetCostAndUsage (EC2 per-instance): %w", err)
+		}
+
+		for _, result := range out.ResultsByTime {
+			for _, group := range result.Groups {
+				if len(group.Keys) == 0 {
+					continue
+				}
+				instanceID := group.Keys[0]
+				metric, ok := group.Metrics["UnblendedCost"]
+				if !ok {
+					continue
+				}
+				costs[instanceID] += parseCostFloat(metric.Amount)
+			}
+		}
+
+		if out.NextPageToken == nil {
+			break
+		}
+		nextToken = out.NextPageToken
+	}
+
+	return costs, nil
+}
