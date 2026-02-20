@@ -148,9 +148,19 @@ func (d *DefaultCostCollector) CollectRegion(
 		return nil, fmt.Errorf("collect NAT gateways in %s: %w", opts.Region, err)
 	}
 
-	rd.RDSInstances, err = collectRDSInstances(ctx, clients.RDS, opts.Region)
+	rd.RDSInstances, err = collectRDSInstances(ctx, clients.RDS, clients.CW, opts.Region, opts.DaysBack)
 	if err != nil {
 		return nil, fmt.Errorf("collect RDS instances in %s: %w", opts.Region, err)
+	}
+
+	// Enrich RDS instances with Cost Explorer per-instance monthly cost.
+	// Non-fatal: instances without cost data retain MonthlyCostUSD == 0,
+	// which causes cost-dependent rules to skip them.
+	rdsCosts, _ := collectRDSInstanceCosts(ctx, clients.CE, start, end)
+	for i := range rd.RDSInstances {
+		if cost, ok := rdsCosts[rd.RDSInstances[i].DBInstanceID]; ok {
+			rd.RDSInstances[i].MonthlyCostUSD = cost
+		}
 	}
 
 	rd.LoadBalancers, err = collectLoadBalancers(ctx, clients.ELB, opts.Region)

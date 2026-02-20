@@ -95,17 +95,17 @@ func collectCostSummary(
 	}, nil
 }
 
-// collectEC2InstanceCosts calls Cost Explorer GetCostAndUsage grouped by
-// RESOURCE_ID, filtered to EC2 Compute only, and returns a map of
-// instanceID → aggregated monthly cost in USD across all returned time periods.
+// collectResourceCosts calls Cost Explorer GetCostAndUsage grouped by
+// RESOURCE_ID, filtered to the given AWS service name, and returns a map of
+// resourceID → aggregated monthly cost in USD across all returned time periods.
 //
 // Non-fatal: if the CE call fails, returns an empty map and the error.
 // Callers must treat a missing entry (cost == 0) as "cost unknown" and skip
 // any rules that depend on accurate cost data.
-func collectEC2InstanceCosts(
+func collectResourceCosts(
 	ctx context.Context,
 	client costCEClient,
-	start, end string,
+	serviceName, start, end string,
 ) (map[string]float64, error) {
 	costs := make(map[string]float64)
 
@@ -121,7 +121,7 @@ func collectEC2InstanceCosts(
 			Filter: &cetypes.Expression{
 				Dimensions: &cetypes.DimensionValues{
 					Key:    cetypes.DimensionService,
-					Values: []string{"Amazon Elastic Compute Cloud - Compute"},
+					Values: []string{serviceName},
 				},
 			},
 			GroupBy: []cetypes.GroupDefinition{
@@ -133,7 +133,7 @@ func collectEC2InstanceCosts(
 			NextPageToken: nextToken,
 		})
 		if err != nil {
-			return costs, fmt.Errorf("GetCostAndUsage (EC2 per-instance): %w", err)
+			return costs, fmt.Errorf("GetCostAndUsage (service=%q): %w", serviceName, err)
 		}
 
 		for _, result := range out.ResultsByTime {
@@ -141,12 +141,12 @@ func collectEC2InstanceCosts(
 				if len(group.Keys) == 0 {
 					continue
 				}
-				instanceID := group.Keys[0]
+				resourceID := group.Keys[0]
 				metric, ok := group.Metrics["UnblendedCost"]
 				if !ok {
 					continue
 				}
-				costs[instanceID] += parseCostFloat(metric.Amount)
+				costs[resourceID] += parseCostFloat(metric.Amount)
 			}
 		}
 
@@ -157,4 +157,24 @@ func collectEC2InstanceCosts(
 	}
 
 	return costs, nil
+}
+
+// collectEC2InstanceCosts returns a map of EC2 instanceID → monthly cost USD
+// by calling the generic collectResourceCosts for the EC2 Compute service.
+func collectEC2InstanceCosts(
+	ctx context.Context,
+	client costCEClient,
+	start, end string,
+) (map[string]float64, error) {
+	return collectResourceCosts(ctx, client, "Amazon Elastic Compute Cloud - Compute", start, end)
+}
+
+// collectRDSInstanceCosts returns a map of RDS DBInstanceID → monthly cost USD
+// by calling the generic collectResourceCosts for the RDS service.
+func collectRDSInstanceCosts(
+	ctx context.Context,
+	client costCEClient,
+	start, end string,
+) (map[string]float64, error) {
+	return collectResourceCosts(ctx, client, "Amazon Relational Database Service", start, end)
 }
