@@ -1,0 +1,322 @@
+package engine
+
+import (
+	"testing"
+	"time"
+
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+)
+
+// newFinding constructs a minimal Finding for use in engine tests.
+// Metadata is initialised with a rule-specific sentinel key so merge tests
+// can verify cross-finding metadata propagation.
+func newFinding(resourceID, region, ruleID string, sev models.Severity, savings float64) models.Finding {
+	return models.Finding{
+		ID:                      ruleID + "-" + resourceID,
+		RuleID:                  ruleID,
+		ResourceID:              resourceID,
+		ResourceType:            models.ResourceEBS,
+		Region:                  region,
+		AccountID:               "111122223333",
+		Profile:                 "test",
+		Severity:                sev,
+		EstimatedMonthlySavings: savings,
+		DetectedAt:              time.Now().UTC(),
+		Metadata:                map[string]any{"src_" + ruleID: true},
+	}
+}
+
+// ── mergeFindings ────────────────────────────────────────────────────────────
+
+func TestMergeFindings_Empty(t *testing.T) {
+	got := mergeFindings(nil)
+	if len(got) != 0 {
+		t.Errorf("want 0, got %d", len(got))
+	}
+	got = mergeFindings([]models.Finding{})
+	if len(got) != 0 {
+		t.Errorf("want 0, got %d", len(got))
+	}
+}
+
+func TestMergeFindings_SingleFinding(t *testing.T) {
+	raw := []models.Finding{newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0)}
+	got := mergeFindings(raw)
+
+	if len(got) != 1 {
+		t.Fatalf("want 1, got %d", len(got))
+	}
+	f := got[0]
+	if f.ResourceID != "vol-1" {
+		t.Errorf("ResourceID = %q; want vol-1", f.ResourceID)
+	}
+	if f.EstimatedMonthlySavings != 8.0 {
+		t.Errorf("savings = %.2f; want 8.00", f.EstimatedMonthlySavings)
+	}
+
+	// Metadata["rules"] must be set to a slice containing the single rule ID.
+	rules, ok := f.Metadata["rules"].([]string)
+	if !ok {
+		t.Fatalf("Metadata[rules] type = %T; want []string", f.Metadata["rules"])
+	}
+	if len(rules) != 1 || rules[0] != "EBS_UNATTACHED" {
+		t.Errorf("Metadata[rules] = %v; want [EBS_UNATTACHED]", rules)
+	}
+}
+
+func TestMergeFindings_DifferentResourcesNotMerged(t *testing.T) {
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+		newFinding("vol-2", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 4.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 2 {
+		t.Errorf("want 2 separate findings, got %d", len(got))
+	}
+}
+
+func TestMergeFindings_DifferentRegionsSameIDNotMerged(t *testing.T) {
+	// Same resource ID but different regions must NOT be merged.
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+		newFinding("vol-1", "eu-west-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 2 {
+		t.Errorf("want 2 findings (different regions), got %d", len(got))
+	}
+}
+
+func TestMergeFindings_SameResourceSumsSavings(t *testing.T) {
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+		newFinding("vol-1", "us-east-1", "EBS_GP2_LEGACY", models.SeverityLow, 2.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 1 {
+		t.Fatalf("want 1 merged finding, got %d", len(got))
+	}
+	if got[0].EstimatedMonthlySavings != 10.0 {
+		t.Errorf("savings = %.2f; want 10.00 (8+2)", got[0].EstimatedMonthlySavings)
+	}
+}
+
+func TestMergeFindings_SameResourceUpgradesSevertiy(t *testing.T) {
+	// First finding is LOW; second is MEDIUM — merged result must use MEDIUM.
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_GP2_LEGACY", models.SeverityLow, 2.0),
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 1 {
+		t.Fatalf("want 1 merged finding, got %d", len(got))
+	}
+	if got[0].Severity != models.SeverityMedium {
+		t.Errorf("Severity = %q; want MEDIUM (upgraded from LOW)", got[0].Severity)
+	}
+}
+
+func TestMergeFindings_SameResourceKeepsHigherSeverity(t *testing.T) {
+	// First finding is HIGH; second is LOW — result must stay HIGH.
+	raw := []models.Finding{
+		newFinding("i-1", "us-east-1", "EC2_NO_SP", models.SeverityHigh, 50.0),
+		newFinding("i-1", "us-east-1", "EC2_LOW_CPU", models.SeverityMedium, 30.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 1 {
+		t.Fatalf("want 1 merged finding, got %d", len(got))
+	}
+	if got[0].Severity != models.SeverityHigh {
+		t.Errorf("Severity = %q; want HIGH (must not be downgraded)", got[0].Severity)
+	}
+}
+
+func TestMergeFindings_RuleIDsCollectedInMetadata(t *testing.T) {
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+		newFinding("vol-1", "us-east-1", "EBS_GP2_LEGACY", models.SeverityLow, 2.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 1 {
+		t.Fatalf("want 1 merged finding, got %d", len(got))
+	}
+
+	rules, ok := got[0].Metadata["rules"].([]string)
+	if !ok {
+		t.Fatalf("Metadata[rules] type = %T; want []string", got[0].Metadata["rules"])
+	}
+	if len(rules) != 2 {
+		t.Fatalf("len(Metadata[rules]) = %d; want 2", len(rules))
+	}
+	// Order must follow registration/evaluation order.
+	if rules[0] != "EBS_UNATTACHED" || rules[1] != "EBS_GP2_LEGACY" {
+		t.Errorf("Metadata[rules] = %v; want [EBS_UNATTACHED EBS_GP2_LEGACY]", rules)
+	}
+}
+
+func TestMergeFindings_MetadataMergedFromLaterFindings(t *testing.T) {
+	// First finding has key "a"; second has keys "b" and "a" (conflicting).
+	// Result must contain "a" from first and "b" from second; "a" must not be overwritten.
+	f1 := newFinding("vol-1", "us-east-1", "RULE_A", models.SeverityLow, 1.0)
+	f1.Metadata = map[string]any{"a": "first", "src_RULE_A": true}
+
+	f2 := newFinding("vol-1", "us-east-1", "RULE_B", models.SeverityLow, 1.0)
+	f2.Metadata = map[string]any{"b": "second", "a": "should-not-overwrite", "src_RULE_B": true}
+
+	got := mergeFindings([]models.Finding{f1, f2})
+	if len(got) != 1 {
+		t.Fatalf("want 1 merged finding, got %d", len(got))
+	}
+	m := got[0].Metadata
+	if m["a"] != "first" {
+		t.Errorf("Metadata[a] = %v; want 'first' (must not be overwritten by second finding)", m["a"])
+	}
+	if m["b"] != "second" {
+		t.Errorf("Metadata[b] = %v; want 'second' (merged from second finding)", m["b"])
+	}
+}
+
+func TestMergeFindings_PreservesInsertionOrder(t *testing.T) {
+	// Three distinct resources; order of groups must match order first seen.
+	raw := []models.Finding{
+		newFinding("vol-c", "us-east-1", "RULE", models.SeverityLow, 1.0),
+		newFinding("vol-a", "us-east-1", "RULE", models.SeverityLow, 2.0),
+		newFinding("vol-b", "us-east-1", "RULE", models.SeverityLow, 3.0),
+	}
+	got := mergeFindings(raw)
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	order := []string{got[0].ResourceID, got[1].ResourceID, got[2].ResourceID}
+	want := []string{"vol-c", "vol-a", "vol-b"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("position %d: got %q; want %q", i, order[i], want[i])
+		}
+	}
+}
+
+func TestMergeFindings_DoesNotMutateInput(t *testing.T) {
+	// The raw input must not have Metadata["rules"] added to it.
+	raw := []models.Finding{
+		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 8.0),
+	}
+	originalMeta := raw[0].Metadata // keep reference to original map
+
+	mergeFindings(raw)
+
+	if _, found := originalMeta["rules"]; found {
+		t.Error("mergeFindings must not add 'rules' key to the original finding's Metadata map")
+	}
+}
+
+func TestMergeFindings_NilMetadataHandled(t *testing.T) {
+	// Findings with nil Metadata must not panic and must still get Metadata["rules"].
+	f := models.Finding{
+		ID:           "RULE-vol-1",
+		RuleID:       "RULE",
+		ResourceID:   "vol-1",
+		ResourceType: models.ResourceEBS,
+		Region:       "us-east-1",
+		Severity:     models.SeverityLow,
+		Metadata:     nil,
+	}
+	got := mergeFindings([]models.Finding{f})
+	if len(got) != 1 {
+		t.Fatalf("want 1, got %d", len(got))
+	}
+	if _, ok := got[0].Metadata["rules"]; !ok {
+		t.Error("Metadata[rules] must be set even when input Metadata is nil")
+	}
+}
+
+// ── computeSummary ──────────────────────────────────────────────────────────
+
+func TestComputeSummary_Empty(t *testing.T) {
+	s := computeSummary(nil)
+	if s.TotalFindings != 0 {
+		t.Errorf("TotalFindings = %d; want 0", s.TotalFindings)
+	}
+	if s.TotalEstimatedMonthlySavings != 0 {
+		t.Errorf("TotalEstimatedMonthlySavings = %.2f; want 0", s.TotalEstimatedMonthlySavings)
+	}
+	if s.CriticalFindings != 0 || s.HighFindings != 0 || s.MediumFindings != 0 || s.LowFindings != 0 {
+		t.Error("all severity counts must be 0 for empty input")
+	}
+}
+
+func TestComputeSummary_CountsPerSeverity(t *testing.T) {
+	findings := []models.Finding{
+		{Severity: models.SeverityCritical, EstimatedMonthlySavings: 100},
+		{Severity: models.SeverityHigh, EstimatedMonthlySavings: 50},
+		{Severity: models.SeverityMedium, EstimatedMonthlySavings: 30},
+		{Severity: models.SeverityLow, EstimatedMonthlySavings: 8},
+		{Severity: models.SeverityInfo, EstimatedMonthlySavings: 0},
+	}
+	s := computeSummary(findings)
+
+	if s.TotalFindings != 5 {
+		t.Errorf("TotalFindings = %d; want 5", s.TotalFindings)
+	}
+	if s.CriticalFindings != 1 {
+		t.Errorf("CriticalFindings = %d; want 1", s.CriticalFindings)
+	}
+	if s.HighFindings != 1 {
+		t.Errorf("HighFindings = %d; want 1", s.HighFindings)
+	}
+	if s.MediumFindings != 1 {
+		t.Errorf("MediumFindings = %d; want 1", s.MediumFindings)
+	}
+	if s.LowFindings != 1 {
+		t.Errorf("LowFindings = %d; want 1", s.LowFindings)
+	}
+}
+
+func TestComputeSummary_InfoCountedInTotalOnly(t *testing.T) {
+	// INFO findings count toward TotalFindings but no severity-specific bucket.
+	findings := []models.Finding{
+		{Severity: models.SeverityInfo, EstimatedMonthlySavings: 5},
+		{Severity: models.SeverityInfo, EstimatedMonthlySavings: 5},
+	}
+	s := computeSummary(findings)
+
+	if s.TotalFindings != 2 {
+		t.Errorf("TotalFindings = %d; want 2", s.TotalFindings)
+	}
+	if s.CriticalFindings+s.HighFindings+s.MediumFindings+s.LowFindings != 0 {
+		t.Error("severity buckets must all be 0 for INFO findings")
+	}
+}
+
+func TestComputeSummary_SumsSavings(t *testing.T) {
+	findings := []models.Finding{
+		{Severity: models.SeverityMedium, EstimatedMonthlySavings: 8.00},
+		{Severity: models.SeverityMedium, EstimatedMonthlySavings: 30.00},
+		{Severity: models.SeverityLow, EstimatedMonthlySavings: 2.00},
+	}
+	s := computeSummary(findings)
+
+	const wantSavings = 40.00
+	if s.TotalEstimatedMonthlySavings != wantSavings {
+		t.Errorf("TotalEstimatedMonthlySavings = %.2f; want %.2f", s.TotalEstimatedMonthlySavings, wantSavings)
+	}
+}
+
+func TestComputeSummary_MultipleFindingsSameSeverity(t *testing.T) {
+	findings := []models.Finding{
+		{Severity: models.SeverityHigh, EstimatedMonthlySavings: 10},
+		{Severity: models.SeverityHigh, EstimatedMonthlySavings: 20},
+		{Severity: models.SeverityHigh, EstimatedMonthlySavings: 30},
+	}
+	s := computeSummary(findings)
+
+	if s.TotalFindings != 3 {
+		t.Errorf("TotalFindings = %d; want 3", s.TotalFindings)
+	}
+	if s.HighFindings != 3 {
+		t.Errorf("HighFindings = %d; want 3", s.HighFindings)
+	}
+	if s.TotalEstimatedMonthlySavings != 60.0 {
+		t.Errorf("TotalEstimatedMonthlySavings = %.2f; want 60.00", s.TotalEstimatedMonthlySavings)
+	}
+}
