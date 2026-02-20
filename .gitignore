@@ -1,0 +1,34 @@
+# Binaries
+/bin/
+/build/
+/dist/
+dp
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+
+# Temporary
+tmp/
+
+#claude
+claude.md
+claude.md
+**/claude.md
