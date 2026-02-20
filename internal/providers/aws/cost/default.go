@@ -132,7 +132,7 @@ func (d *DefaultCostCollector) CollectRegion(
 		return nil, fmt.Errorf("collect EBS volumes in %s: %w", opts.Region, err)
 	}
 
-	rd.NATGateways, err = collectNATGateways(ctx, clients.EC2, opts.Region)
+	rd.NATGateways, err = collectNATGateways(ctx, clients.EC2, clients.CW, opts.Region, opts.DaysBack)
 	if err != nil {
 		return nil, fmt.Errorf("collect NAT gateways in %s: %w", opts.Region, err)
 	}
