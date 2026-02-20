@@ -15,6 +15,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
+	costpack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
 )
 
 func newRootCmd() *cobra.Command {
@@ -63,12 +64,9 @@ func newCostCmd() *cobra.Command {
 			collector := awscost.NewDefaultCostCollector()
 
 			registry := rules.NewDefaultRuleRegistry()
-			registry.Register(rules.EBSUnattachedRule{})
-			registry.Register(rules.EBSGP2LegacyRule{})
-			registry.Register(rules.EC2LowCPURule{})
-			registry.Register(rules.NATLowTrafficRule{})
-			registry.Register(rules.SavingsPlanUnderutilizedRule{})
-			registry.Register(rules.RDSLowCPURule{})
+			for _, r := range costpack.New() {
+				registry.Register(r)
+			}
 
 			eng := engine.NewDefaultEngine(provider, collector, registry)
 
