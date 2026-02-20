@@ -67,6 +67,7 @@ func newCostCmd() *cobra.Command {
 			registry.Register(rules.EBSGP2LegacyRule{})
 			registry.Register(rules.EC2LowCPURule{})
 			registry.Register(rules.NATLowTrafficRule{})
+			registry.Register(rules.SavingsPlanUnderutilizedRule{})
 
 			eng := engine.NewDefaultEngine(provider, collector, registry)
 

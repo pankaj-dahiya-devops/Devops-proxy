@@ -45,11 +45,12 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 			state := state
 			t.Run(state, func(t *testing.T) {
 				ctx := makeCtx(models.EC2Instance{
-					InstanceID:    "i-1",
-					Region:        region,
-					InstanceType:  "t3.medium",
-					State:         state,
-					AvgCPUPercent: 5.0,
+					InstanceID:     "i-1",
+					Region:         region,
+					InstanceType:   "t3.medium",
+					State:          state,
+					AvgCPUPercent:  5.0,
+					MonthlyCostUSD: 100.0,
 				})
 				if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 0 {
 					t.Errorf("state=%q: expected 0 findings, got %d", state, len(got))
@@ -60,24 +61,40 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 
 	t.Run("zero AvgCPUPercent is skipped (no CloudWatch data)", func(t *testing.T) {
 		ctx := makeCtx(models.EC2Instance{
-			InstanceID:    "i-1",
-			Region:        region,
-			InstanceType:  "m5.large",
-			State:         "running",
-			AvgCPUPercent: 0.0,
+			InstanceID:     "i-1",
+			Region:         region,
+			InstanceType:   "m5.large",
+			State:          "running",
+			AvgCPUPercent:  0.0,
+			MonthlyCostUSD: 100.0,
 		})
 		if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 0 {
 			t.Errorf("expected 0 findings for zero CPU (no CW data), got %d", len(got))
 		}
 	})
 
+	t.Run("zero MonthlyCostUSD is skipped (cost unknown)", func(t *testing.T) {
+		ctx := makeCtx(models.EC2Instance{
+			InstanceID:     "i-1",
+			Region:         region,
+			InstanceType:   "m5.large",
+			State:          "running",
+			AvgCPUPercent:  5.0,
+			MonthlyCostUSD: 0,
+		})
+		if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 0 {
+			t.Errorf("expected 0 findings for zero MonthlyCostUSD (cost unknown), got %d", len(got))
+		}
+	})
+
 	t.Run("CPU at threshold is not flagged", func(t *testing.T) {
 		ctx := makeCtx(models.EC2Instance{
-			InstanceID:    "i-1",
-			Region:        region,
-			InstanceType:  "m5.large",
-			State:         "running",
-			AvgCPUPercent: 10.0, // exactly at threshold — should not fire
+			InstanceID:     "i-1",
+			Region:         region,
+			InstanceType:   "m5.large",
+			State:          "running",
+			AvgCPUPercent:  10.0, // exactly at threshold — should not fire
+			MonthlyCostUSD: 100.0,
 		})
 		if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 0 {
 			t.Errorf("CPU=10.0 (at threshold): expected 0 findings, got %d", len(got))
@@ -86,11 +103,12 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 
 	t.Run("CPU above threshold is not flagged", func(t *testing.T) {
 		ctx := makeCtx(models.EC2Instance{
-			InstanceID:    "i-1",
-			Region:        region,
-			InstanceType:  "m5.large",
-			State:         "running",
-			AvgCPUPercent: 50.0,
+			InstanceID:     "i-1",
+			Region:         region,
+			InstanceType:   "m5.large",
+			State:          "running",
+			AvgCPUPercent:  50.0,
+			MonthlyCostUSD: 100.0,
 		})
 		if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 0 {
 			t.Errorf("CPU=50.0: expected 0 findings, got %d", len(got))
@@ -99,11 +117,12 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 
 	t.Run("running instance with low CPU is flagged with correct fields", func(t *testing.T) {
 		inst := models.EC2Instance{
-			InstanceID:    "i-abc123",
-			Region:        region,
-			InstanceType:  "m5.large",
-			State:         "running",
-			AvgCPUPercent: 3.5,
+			InstanceID:     "i-abc123",
+			Region:         region,
+			InstanceType:   "m5.large",
+			State:          "running",
+			AvgCPUPercent:  3.5,
+			MonthlyCostUSD: 100.0,
 		}
 		findings := (EC2LowCPURule{}).Evaluate(makeCtx(inst))
 		if len(findings) != 1 {
@@ -135,14 +154,17 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 		if f.Profile != profile {
 			t.Errorf("Profile = %q; want %q", f.Profile, profile)
 		}
-		if f.EstimatedMonthlySavings != 30.00 {
-			t.Errorf("EstimatedMonthlySavings = %.4f; want 30.00", f.EstimatedMonthlySavings)
+		if want := 30.00; f.EstimatedMonthlySavings != want { // 100.0 * 0.30
+			t.Errorf("EstimatedMonthlySavings = %.4f; want %.2f", f.EstimatedMonthlySavings, want)
 		}
 		if f.Metadata["instance_type"] != "m5.large" {
 			t.Errorf("Metadata[instance_type] = %v; want m5.large", f.Metadata["instance_type"])
 		}
 		if f.Metadata["avg_cpu_percent"] != 3.5 {
 			t.Errorf("Metadata[avg_cpu_percent] = %v; want 3.5", f.Metadata["avg_cpu_percent"])
+		}
+		if f.Metadata["monthly_cost_usd"] != 100.0 {
+			t.Errorf("Metadata[monthly_cost_usd] = %v; want 100.0", f.Metadata["monthly_cost_usd"])
 		}
 		if f.Explanation == "" {
 			t.Error("Explanation must not be empty")
@@ -155,32 +177,63 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 		}
 	})
 
+	t.Run("savings are proportional to monthly cost", func(t *testing.T) {
+		cases := []struct {
+			costUSD     float64
+			wantSavings float64
+		}{
+			{100.0, 30.0},
+			{200.0, 60.0},
+			{50.0, 15.0},
+		}
+		for _, tc := range cases {
+			ctx := makeCtx(models.EC2Instance{
+				InstanceID:     "i-1",
+				Region:         region,
+				InstanceType:   "m5.large",
+				State:          "running",
+				AvgCPUPercent:  5.0,
+				MonthlyCostUSD: tc.costUSD,
+			})
+			findings := (EC2LowCPURule{}).Evaluate(ctx)
+			if len(findings) != 1 {
+				t.Fatalf("costUSD=%.0f: want 1 finding, got %d", tc.costUSD, len(findings))
+			}
+			if findings[0].EstimatedMonthlySavings != tc.wantSavings {
+				t.Errorf("costUSD=%.0f: savings = %.2f; want %.2f",
+					tc.costUSD, findings[0].EstimatedMonthlySavings, tc.wantSavings)
+			}
+		}
+	})
+
 	t.Run("CPU just below threshold is flagged", func(t *testing.T) {
 		ctx := makeCtx(models.EC2Instance{
-			InstanceID:    "i-1",
-			Region:        region,
-			InstanceType:  "t3.medium",
-			State:         "running",
-			AvgCPUPercent: 9.9,
+			InstanceID:     "i-1",
+			Region:         region,
+			InstanceType:   "t3.medium",
+			State:          "running",
+			AvgCPUPercent:  9.9,
+			MonthlyCostUSD: 50.0,
 		})
 		if got := (EC2LowCPURule{}).Evaluate(ctx); len(got) != 1 {
 			t.Errorf("CPU=9.9 (just below threshold): want 1 finding, got %d", len(got))
 		}
 	})
 
-	t.Run("only low-CPU running instances flagged from mixed set", func(t *testing.T) {
+	t.Run("only low-CPU running instances with known cost flagged from mixed set", func(t *testing.T) {
 		ctx := makeCtx(
-			models.EC2Instance{InstanceID: "i-1", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 5.0},  // flagged
-			models.EC2Instance{InstanceID: "i-2", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 0.0},  // skipped: no CW data
-			models.EC2Instance{InstanceID: "i-3", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 50.0}, // skipped: high CPU
-			models.EC2Instance{InstanceID: "i-4", Region: region, InstanceType: "m5.large", State: "stopped", AvgCPUPercent: 3.0},  // skipped: not running
-			models.EC2Instance{InstanceID: "i-5", Region: region, InstanceType: "t3.small", State: "running", AvgCPUPercent: 1.5},  // flagged
+			models.EC2Instance{InstanceID: "i-1", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 5.0, MonthlyCostUSD: 100.0},  // flagged
+			models.EC2Instance{InstanceID: "i-2", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 0.0, MonthlyCostUSD: 100.0},  // skipped: no CW data
+			models.EC2Instance{InstanceID: "i-3", Region: region, InstanceType: "m5.large", State: "running", AvgCPUPercent: 50.0, MonthlyCostUSD: 100.0}, // skipped: high CPU
+			models.EC2Instance{InstanceID: "i-4", Region: region, InstanceType: "m5.large", State: "stopped", AvgCPUPercent: 3.0, MonthlyCostUSD: 100.0},  // skipped: not running
+			models.EC2Instance{InstanceID: "i-5", Region: region, InstanceType: "t3.small", State: "running", AvgCPUPercent: 1.5, MonthlyCostUSD: 0},      // skipped: no cost data
+			models.EC2Instance{InstanceID: "i-6", Region: region, InstanceType: "t3.small", State: "running", AvgCPUPercent: 3.0, MonthlyCostUSD: 80.0},   // flagged
 		)
 		findings := (EC2LowCPURule{}).Evaluate(ctx)
 		if len(findings) != 2 {
 			t.Fatalf("want 2 findings, got %d", len(findings))
 		}
-		want := map[string]bool{"i-1": true, "i-5": true}
+		want := map[string]bool{"i-1": true, "i-6": true}
 		for _, f := range findings {
 			if !want[f.ResourceID] {
 				t.Errorf("unexpected ResourceID %q in findings", f.ResourceID)

@@ -90,13 +90,14 @@ type CostSummary struct {
 
 // EC2Instance represents a single collected EC2 instance.
 type EC2Instance struct {
-	InstanceID    string            `json:"instance_id"`
-	Region        string            `json:"region"`
-	InstanceType  string            `json:"instance_type"`
-	State         string            `json:"state"`
-	LaunchTime    time.Time         `json:"launch_time"`
-	AvgCPUPercent float64           `json:"avg_cpu_percent"`
-	Tags          map[string]string `json:"tags,omitempty"`
+	InstanceID     string            `json:"instance_id"`
+	Region         string            `json:"region"`
+	InstanceType   string            `json:"instance_type"`
+	State          string            `json:"state"`
+	LaunchTime     time.Time         `json:"launch_time"`
+	AvgCPUPercent  float64           `json:"avg_cpu_percent"`
+	MonthlyCostUSD float64           `json:"monthly_cost_usd"`
+	Tags           map[string]string `json:"tags,omitempty"`
 }
 
 // EBSVolume represents a single collected EBS volume.

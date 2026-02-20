@@ -127,6 +127,17 @@ func (d *DefaultCostCollector) CollectRegion(
 		return nil, fmt.Errorf("collect EC2 instances in %s: %w", opts.Region, err)
 	}
 
+	// Enrich EC2 instances with Cost Explorer per-instance monthly cost.
+	// Non-fatal: instances without cost data retain MonthlyCostUSD == 0,
+	// which causes cost-dependent rules to skip them.
+	start, end := billingDateRange(effectiveDaysBack(opts.DaysBack))
+	ec2Costs, _ := collectEC2InstanceCosts(ctx, clients.CE, start, end)
+	for i := range rd.EC2Instances {
+		if cost, ok := ec2Costs[rd.EC2Instances[i].InstanceID]; ok {
+			rd.EC2Instances[i].MonthlyCostUSD = cost
+		}
+	}
+
 	rd.EBSVolumes, err = collectEBSVolumes(ctx, clients.EC2, opts.Region)
 	if err != nil {
 		return nil, fmt.Errorf("collect EBS volumes in %s: %w", opts.Region, err)
