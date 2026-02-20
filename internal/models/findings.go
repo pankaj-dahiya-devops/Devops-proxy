@@ -131,6 +131,8 @@ type RDSInstance struct {
 	Engine          string            `json:"engine"`
 	MultiAZ         bool              `json:"multi_az"`
 	Status          string            `json:"status"`
+	AvgCPUPercent   float64           `json:"avg_cpu_percent"`
+	MonthlyCostUSD  float64           `json:"monthly_cost_usd"`
 	Tags            map[string]string `json:"tags,omitempty"`
 }
 
