@@ -76,7 +76,7 @@ func newCostCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultEngine(provider, collector, registry)
+			eng := engine.NewDefaultEngine(provider, collector, registry, nil) // No policy for now; will add flags and loading logic later
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeCost,
