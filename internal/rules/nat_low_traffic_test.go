@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 func TestNATLowTrafficRule_IDAndName(t *testing.T) {
@@ -177,4 +178,38 @@ func TestNATLowTrafficRule_Evaluate(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestNATLowTrafficRule_ThresholdOverride(t *testing.T) {
+	// Gateway at 1.5 GB is above the default 1 GB threshold and would NOT be
+	// flagged without a policy. A policy raising traffic_gb_threshold to 2 GB
+	// makes 1.5 GB fall below the threshold, so the gateway MUST be flagged.
+	cfg := &policy.PolicyConfig{
+		Rules: map[string]policy.RuleConfig{
+			"NAT_LOW_TRAFFIC": {
+				Params: map[string]float64{"traffic_gb_threshold": 2.0},
+			},
+		},
+	}
+	ctx := RuleContext{
+		AccountID: "111122223333",
+		Profile:   "test",
+		Policy:    cfg,
+		RegionData: &models.RegionData{
+			Region: "us-east-1",
+			NATGateways: []models.NATGateway{{
+				NATGatewayID:     "nat-override",
+				Region:           "us-east-1",
+				State:            "available",
+				BytesProcessedGB: 1.5,
+			}},
+		},
+	}
+	findings := (NATLowTrafficRule{}).Evaluate(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (traffic_gb_threshold raised to 2 GB), got %d", len(findings))
+	}
+	if findings[0].ResourceID != "nat-override" {
+		t.Errorf("ResourceID = %q; want nat-override", findings[0].ResourceID)
+	}
 }

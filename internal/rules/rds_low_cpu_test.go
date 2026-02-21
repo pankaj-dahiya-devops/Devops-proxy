@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 func TestRDSLowCPURule_IDAndName(t *testing.T) {
@@ -283,4 +284,39 @@ func TestRDSLowCPURule_Evaluate(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestRDSLowCPURule_ThresholdOverride(t *testing.T) {
+	// Instance at 12% CPU is above the default 10% threshold and would NOT be
+	// flagged without a policy. A policy raising cpu_threshold to 15% makes
+	// 12% fall below the threshold, so the instance MUST be flagged.
+	cfg := &policy.PolicyConfig{
+		Rules: map[string]policy.RuleConfig{
+			"RDS_LOW_CPU": {
+				Params: map[string]float64{"cpu_threshold": 15.0},
+			},
+		},
+	}
+	ctx := RuleContext{
+		AccountID: "111122223333",
+		Profile:   "test",
+		Policy:    cfg,
+		RegionData: &models.RegionData{
+			Region: "us-east-1",
+			RDSInstances: []models.RDSInstance{{
+				DBInstanceID:   "db-override",
+				Region:         "us-east-1",
+				Status:         "available",
+				AvgCPUPercent:  12.0,
+				MonthlyCostUSD: 200.0,
+			}},
+		},
+	}
+	findings := (RDSLowCPURule{}).Evaluate(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (cpu_threshold raised to 15%%), got %d", len(findings))
+	}
+	if findings[0].ResourceID != "db-override" {
+		t.Errorf("ResourceID = %q; want db-override", findings[0].ResourceID)
+	}
 }

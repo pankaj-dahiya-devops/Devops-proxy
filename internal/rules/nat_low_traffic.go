@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 const (
@@ -40,7 +41,8 @@ func (r NATLowTrafficRule) Evaluate(ctx RuleContext) []models.Finding {
 		if ng.State != "available" {
 			continue
 		}
-		if ng.BytesProcessedGB >= natLowTrafficThresholdGB {
+		threshold := policy.GetThreshold(natLowTrafficRuleID, "traffic_gb_threshold", natLowTrafficThresholdGB, ctx.Policy)
+		if ng.BytesProcessedGB >= threshold {
 			continue
 		}
 

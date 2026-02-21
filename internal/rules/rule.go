@@ -2,6 +2,7 @@ package rules
 
 import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 // RuleContext carries all collected data for a single region and profile.
@@ -20,6 +21,10 @@ type RuleContext struct {
 	// CostSummary is the account-level Cost Explorer data, shared across
 	// all regional evaluations. May be nil if collection failed.
 	CostSummary *models.CostSummary
+
+	// Policy holds the active PolicyConfig for threshold overrides. May be nil
+	// when no policy file is loaded; rules must treat nil as "use defaults".
+	Policy *policy.PolicyConfig
 }
 
 // Rule is a single deterministic waste-detection rule.

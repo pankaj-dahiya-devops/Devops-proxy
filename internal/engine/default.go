@@ -171,6 +171,7 @@ func (e *DefaultEngine) evaluateAll(
 			Profile:     profile,
 			RegionData:  &regionData[i],
 			CostSummary: costSummary,
+			Policy:      e.policy,
 		}
 		findings = append(findings, e.registry.EvaluateAll(rctx)...)
 	}

@@ -148,6 +148,7 @@ func (e *DefaultSecurityEngine) evaluateSecurity(
 			Region:   "global",
 			Security: *secData,
 		},
+		Policy: e.policy,
 	}
 	raw := e.registry.EvaluateAll(rctx)
 	return mergeFindings(raw)

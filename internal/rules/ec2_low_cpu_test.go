@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 func TestEC2LowCPURule_IDAndName(t *testing.T) {
@@ -240,4 +241,40 @@ func TestEC2LowCPURule_Evaluate(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestEC2LowCPURule_ThresholdOverride(t *testing.T) {
+	// Instance at 12% CPU is above the default 10% threshold, so it would NOT
+	// be flagged without a policy. A policy raising cpu_threshold to 15% makes
+	// 12% fall below the threshold, so the instance MUST be flagged.
+	cfg := &policy.PolicyConfig{
+		Rules: map[string]policy.RuleConfig{
+			"EC2_LOW_CPU": {
+				Params: map[string]float64{"cpu_threshold": 15.0},
+			},
+		},
+	}
+	ctx := RuleContext{
+		AccountID: "111122223333",
+		Profile:   "test",
+		Policy:    cfg,
+		RegionData: &models.RegionData{
+			Region: "us-east-1",
+			EC2Instances: []models.EC2Instance{{
+				InstanceID:     "i-override",
+				Region:         "us-east-1",
+				InstanceType:   "m5.large",
+				State:          "running",
+				AvgCPUPercent:  12.0,
+				MonthlyCostUSD: 100.0,
+			}},
+		},
+	}
+	findings := (EC2LowCPURule{}).Evaluate(ctx)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 finding (cpu_threshold raised to 15%%), got %d", len(findings))
+	}
+	if findings[0].ResourceID != "i-override" {
+		t.Errorf("ResourceID = %q; want i-override", findings[0].ResourceID)
+	}
 }

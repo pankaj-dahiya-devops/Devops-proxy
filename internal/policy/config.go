@@ -11,6 +11,7 @@ type DomainConfig struct {
 }
 
 type RuleConfig struct {
-	Enabled  *bool  `yaml:"enabled,omitempty"`
-	Severity string `yaml:"severity,omitempty"`
+	Enabled  *bool              `yaml:"enabled,omitempty"`
+	Severity string             `yaml:"severity,omitempty"`
+	Params   map[string]float64 `yaml:"params,omitempty"`
 }

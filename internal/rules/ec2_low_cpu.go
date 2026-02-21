@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 const (
@@ -51,7 +52,8 @@ func (r EC2LowCPURule) Evaluate(ctx RuleContext) []models.Finding {
 		if inst.AvgCPUPercent == 0 {
 			continue
 		}
-		if inst.AvgCPUPercent >= ec2LowCPUThresholdPercent {
+		threshold := policy.GetThreshold(ec2LowCPURuleID, "cpu_threshold", ec2LowCPUThresholdPercent, ctx.Policy)
+		if inst.AvgCPUPercent >= threshold {
 			continue
 		}
 		// 0 means Cost Explorer had no data; skip — savings cannot be estimated.

@@ -176,6 +176,7 @@ func (e *DefaultDataProtectionEngine) evaluateDataProtection(
 			AccountID:  accountID,
 			Profile:    profile,
 			RegionData: &regionData[i],
+			Policy:     e.policy,
 		}
 		raw = append(raw, e.registry.EvaluateAll(rctx)...)
 	}
@@ -188,6 +189,7 @@ func (e *DefaultDataProtectionEngine) evaluateDataProtection(
 			Region:   "global",
 			Security: *secData,
 		},
+		Policy: e.policy,
 	}
 	raw = append(raw, e.registry.EvaluateAll(rctx)...)
 
