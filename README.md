@@ -55,6 +55,14 @@ rules:
   NAT_LOW_TRAFFIC:
     params:
       traffic_gb_threshold: 2.0  # raise threshold from default 1 GB to 2 GB
+
+enforcement:
+  cost:
+    fail_on_severity: HIGH       # exit 1 if any cost finding is HIGH or above
+  security:
+    fail_on_severity: CRITICAL   # exit 1 only for CRITICAL security findings
+  dataprotection:
+    fail_on_severity: HIGH
 ```
 
 ### Behaviour
@@ -67,11 +75,15 @@ rules:
 | `rules.EC2_LOW_CPU.enabled: false` | All `EC2_LOW_CPU` findings dropped |
 | `rules.SG_OPEN_SSH.severity: CRITICAL` | Finding severity replaced with `CRITICAL` |
 | `rules.EC2_LOW_CPU.params.cpu_threshold: 15.0` | CPU threshold raised to 15% (overrides default 10%) |
+| `enforcement.cost.fail_on_severity: HIGH` | Exit code 1 if any cost finding is HIGH or CRITICAL |
 | Rule not listed in policy | Pass through unchanged |
 
 **Severity override + min_severity interact correctly:** the severity override is applied first,
 then the min_severity filter evaluates the post-override severity. A MEDIUM finding overridden
 to CRITICAL will survive a `min_severity: HIGH` filter.
+
+**Enforcement fires after all output:** JSON/table/summary is always printed to stdout before
+the exit-code check. stderr receives the enforcement error message.
 
 **Severity ordering:** `CRITICAL > HIGH > MEDIUM > LOW > INFO`
 
@@ -82,6 +94,17 @@ to CRITICAL will survive a `min_severity: HIGH` filter.
 | `EC2_LOW_CPU` | `cpu_threshold` | `10.0` |
 | `RDS_LOW_CPU` | `cpu_threshold` | `10.0` |
 | `NAT_LOW_TRAFFIC` | `traffic_gb_threshold` | `1.0` |
+
+### CI usage
+
+```bash
+# Fail CI if any HIGH or above cost finding is detected
+./dp aws audit cost --policy ./dp.yaml
+echo $?   # 1 if HIGH+ findings present, 0 otherwise
+
+# Capture JSON report and still enforce
+./dp aws audit security --policy ./dp.yaml --report=json > report.json
+```
 
 ### Using `--policy`
 
@@ -442,7 +465,7 @@ LoadProfile(s)
 
 ### Test coverage
 
-120 unit tests across rule engine, policy layer, data-protection rules, security rules, k8s provider, engine core, and CLI:
+131 unit tests across rule engine, policy layer, data-protection rules, security rules, k8s provider, engine core, and CLI:
 - `EBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
 - `EBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
 - `EC2LowCPURule` — 13 subtests (CW sentinel, threshold boundary, state filtering, CE cost skip, savings proportional)
@@ -479,6 +502,7 @@ LoadProfile(s)
 - [x] Policy integration for cost, security, and data protection engines
 - [x] Threshold overrides via `rules.<ID>.params` in `dp.yaml` (EC2, RDS, NAT rules)
 - [x] Minimum severity enforcement per domain via `domains.<name>.min_severity`
+- [x] CI enforcement: exit code 1 on qualifying findings via `enforcement.<domain>.fail_on_severity`
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
 - [ ] Parallel region/profile collection (errgroup)
