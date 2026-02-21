@@ -17,12 +17,16 @@ const (
 type ResourceType string
 
 const (
-	ResourceEC2          ResourceType = "EC2_INSTANCE"
-	ResourceEBS          ResourceType = "EBS_VOLUME"
-	ResourceNATGateway   ResourceType = "NAT_GATEWAY"
-	ResourceRDS          ResourceType = "RDS_INSTANCE"
-	ResourceLoadBalancer ResourceType = "LOAD_BALANCER"
-	ResourceSavingsPlan  ResourceType = "SAVINGS_PLAN"
+	ResourceEC2           ResourceType = "EC2_INSTANCE"
+	ResourceEBS           ResourceType = "EBS_VOLUME"
+	ResourceNATGateway    ResourceType = "NAT_GATEWAY"
+	ResourceRDS           ResourceType = "RDS_INSTANCE"
+	ResourceLoadBalancer  ResourceType = "LOAD_BALANCER"
+	ResourceSavingsPlan   ResourceType = "SAVINGS_PLAN"
+	ResourceS3Bucket      ResourceType = "S3_BUCKET"
+	ResourceSecurityGroup ResourceType = "SECURITY_GROUP"
+	ResourceIAMUser       ResourceType = "IAM_USER"
+	ResourceRootAccount   ResourceType = "ROOT_ACCOUNT"
 )
 
 // Finding is a single detected waste or inefficiency issue.
@@ -108,6 +112,7 @@ type EBSVolume struct {
 	SizeGB     int32             `json:"size_gb"`
 	State      string            `json:"state"`
 	Attached   bool              `json:"attached"`
+	Encrypted  bool              `json:"encrypted"`
 	InstanceID string            `json:"instance_id,omitempty"`
 	Tags       map[string]string `json:"tags,omitempty"`
 }
@@ -125,15 +130,16 @@ type NATGateway struct {
 
 // RDSInstance represents a single collected RDS database instance.
 type RDSInstance struct {
-	DBInstanceID    string            `json:"db_instance_id"`
-	Region          string            `json:"region"`
-	DBInstanceClass string            `json:"db_instance_class"`
-	Engine          string            `json:"engine"`
-	MultiAZ         bool              `json:"multi_az"`
-	Status          string            `json:"status"`
-	AvgCPUPercent   float64           `json:"avg_cpu_percent"`
-	MonthlyCostUSD  float64           `json:"monthly_cost_usd"`
-	Tags            map[string]string `json:"tags,omitempty"`
+	DBInstanceID     string            `json:"db_instance_id"`
+	Region           string            `json:"region"`
+	DBInstanceClass  string            `json:"db_instance_class"`
+	Engine           string            `json:"engine"`
+	MultiAZ          bool              `json:"multi_az"`
+	Status           string            `json:"status"`
+	StorageEncrypted bool              `json:"storage_encrypted"`
+	AvgCPUPercent    float64           `json:"avg_cpu_percent"`
+	MonthlyCostUSD   float64           `json:"monthly_cost_usd"`
+	Tags             map[string]string `json:"tags,omitempty"`
 }
 
 // LoadBalancer represents a single collected Elastic Load Balancer.
@@ -166,4 +172,8 @@ type RegionData struct {
 	RDSInstances        []RDSInstance         `json:"rds_instances"`
 	LoadBalancers       []LoadBalancer        `json:"load_balancers"`
 	SavingsPlanCoverage []SavingsPlanCoverage `json:"savings_plan_coverage"`
+	// Security holds the raw security posture data for this region and, when
+	// populated by the security collector, global account-level data (IAM, root,
+	// S3) is included in the Security field of the primary evaluation context.
+	Security SecurityData `json:"security,omitempty"`
 }

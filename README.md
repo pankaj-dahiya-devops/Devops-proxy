@@ -2,7 +2,7 @@
 
 An extensible DevOps execution engine with deterministic rule-based analysis and optional AI summarisation.
 
-Currently implements: **AWS cost audit** — multi-profile, multi-region, CloudWatch-backed.
+Currently implements: **AWS cost audit**, **AWS security audit**, and **AWS data protection audit** — multi-profile, multi-region, CloudWatch-backed.
 
 ---
 
@@ -14,6 +14,8 @@ Currently implements: **AWS cost audit** — multi-profile, multi-region, CloudW
 - Rule engine works fully offline — no LLM required
 - Real CloudWatch CPU data for EC2 and RDS analysis
 - Cost Explorer per-instance cost data for EC2 and RDS savings estimation
+- S3 public access, IAM MFA, root access key, and open SSH/RDP security checks
+- Data protection: EBS encryption, RDS storage encryption, S3 default encryption checks
 - Per-resource finding merge: multiple rules on the same resource are collapsed into a single finding with summed savings
 - JSON output is SaaS-compatible from day one
 
@@ -32,6 +34,8 @@ go build -o dp ./cmd/dp
 ---
 
 ## Usage
+
+### AWS cost audit
 
 ```bash
 # Audit default profile, table output
@@ -53,7 +57,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit cost --output /tmp/audit.json
 ```
 
-### Flags
+#### Flags (`dp aws audit cost`)
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
@@ -65,11 +69,121 @@ go build -o dp ./cmd/dp
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
 | `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 
+### AWS security audit
+
+```bash
+# Audit default profile, table output
+./dp aws audit security
+
+# Named profile, JSON output
+./dp aws audit security --profile staging --report=json
+
+# All configured profiles
+./dp aws audit security --all-profiles
+
+# Specific regions with compact summary
+./dp aws audit security --region us-east-1 --region eu-west-1 --summary
+
+# Save full JSON report to file
+./dp aws audit security --output security-report.json
+```
+
+#### Flags (`dp aws audit security`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile` | string | `""` | Named AWS profile (empty = default/env credentials) |
+| `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
+| `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
+| `--report` | string | `table` | Output format: `table` or `json` |
+| `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
+| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+
+### AWS data protection audit
+
+```bash
+# Audit default profile, table output
+./dp aws audit dataprotection
+
+# Named profile, JSON output
+./dp aws audit dataprotection --profile staging --report=json
+
+# All configured profiles
+./dp aws audit dataprotection --all-profiles
+
+# Specific regions with compact summary
+./dp aws audit dataprotection --region us-east-1 --region eu-west-1 --summary
+
+# Save full JSON report to file
+./dp aws audit dataprotection --output dp-report.json
+```
+
+#### Flags (`dp aws audit dataprotection`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile` | string | `""` | Named AWS profile (empty = default/env credentials) |
+| `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
+| `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
+| `--report` | string | `table` | Output format: `table` or `json` |
+| `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
+| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+
+### Kubernetes inspect
+
+```bash
+# Inspect current kubeconfig context
+./dp kubernetes inspect
+
+# Inspect a specific context
+./dp kubernetes inspect --context my-cluster
+```
+
+#### Flags (`dp kubernetes inspect`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--context` | string | `""` | Kubeconfig context to use (empty = current context) |
+
 ---
 
 ## Example Output
 
-### Table
+### `dp kubernetes inspect`
+
+```
+Context:     prod-eks
+API Server:  https://ABCD1234.gr7.us-east-1.eks.amazonaws.com
+Nodes:       6
+Namespaces:  12
+```
+
+### AWS security audit — Table
+
+```
+Profile: default       Account: 123456789012  Regions: 3  Findings: 3
+
+RESOURCE ID                                REGION           SEVERITY    TYPE
+----------------------------------------------------------------------------------------
+123456789012                               global           CRITICAL    ROOT_ACCOUNT
+my-public-bucket                           global           HIGH        S3_BUCKET
+sg-0abc1234def567890                       us-east-1        HIGH        SECURITY_GROUP
+bob                                        global           MEDIUM      IAM_USER
+```
+
+### AWS data protection audit — Table
+
+```
+Profile: default       Account: 123456789012  Regions: 3  Findings: 3
+
+RESOURCE ID                                REGION           SEVERITY    TYPE
+----------------------------------------------------------------------------------------
+mydb-prod                                  us-east-1        CRITICAL    RDS_INSTANCE
+vol-0abc1234def567890                      eu-west-1        HIGH        EBS_VOLUME
+my-unencrypted-bucket                      global           HIGH        S3_BUCKET
+```
+
+### AWS cost audit — Table
 
 ```
 Profile: default       Account: 123456789012  Regions: 3  Findings: 4  Est. Savings: $108.00/mo
@@ -82,7 +196,7 @@ vol-0abc1234def567890                      us-east-1        MEDIUM      $16.00
 vol-0def5678abc123456                      eu-west-1        LOW         $2.00
 ```
 
-### JSON
+### AWS cost audit — JSON
 
 ```json
 {
@@ -145,25 +259,51 @@ cmd/dp/
   commands.go      Cobra commands, flag parsing, output rendering
 
 internal/engine/
-  engine.go        Engine interface, AuditOptions, AuditType
-  default.go       DefaultEngine: orchestrates collection → rules → merge → sort → report
+  engine.go           Engine interface, AuditOptions, AuditType
+  default.go          DefaultEngine: orchestrates cost collection → rules → merge → sort → report
+  security.go         DefaultSecurityEngine: orchestrates security collection → rules → report
+  dataprotection.go   DefaultDataProtectionEngine: EBS/RDS (cost collector) + S3 (security collector)
 
 internal/providers/aws/
   common/          AWSClientProvider: profile loading, region discovery
   cost/            CostCollector: EC2, EBS, NAT, RDS, ELB, Savings Plan, Cost Explorer
+  security/        SecurityCollector: S3, EC2 security groups, IAM users, root account
+
+internal/providers/kubernetes/
+  models.go        ClusterInfo, NodeInfo, NamespaceInfo, ClusterData
+  client.go        KubeClientProvider interface, DefaultKubeClientProvider
+  loader.go        LoadClientset: kubeconfig → clientset + ClusterInfo
+  collector.go     CollectClusterData: nodes + namespaces (accepts kubernetes.Interface)
 
 internal/rules/
   rule.go                        Rule interface, RuleContext, RuleRegistry interface
   registry.go                    DefaultRuleRegistry
-  ec2_low_cpu.go                 EC2_LOW_CPU: running instances with avg CPU < 10% (CloudWatch + CE cost)
+  ec2_low_cpu.go                 EC2_LOW_CPU: running instances with avg CPU < 10%
   ebs_unattached.go              EBS_UNATTACHED: volumes in "available" state
   ebs_gp2_legacy.go              EBS_GP2_LEGACY: gp2 volumes that should migrate to gp3
-  nat_low_traffic.go             NAT_LOW_TRAFFIC: gateways with < 1 GB traffic (CloudWatch)
+  nat_low_traffic.go             NAT_LOW_TRAFFIC: gateways with < 1 GB traffic
   savings_plan_underutilized.go  SAVINGS_PLAN_UNDERUTILIZED: SP coverage < 60%
-  rds_low_cpu.go                 RDS_LOW_CPU: available instances with avg CPU < 10% (CloudWatch + CE cost)
+  rds_low_cpu.go                 RDS_LOW_CPU: available instances with avg CPU < 10%
+  root_access_key.go             ROOT_ACCESS_KEY: root account has active access keys
+  s3_public_bucket.go            S3_PUBLIC_BUCKET: bucket lacks full public access block
+  sg_open_ssh.go                 SG_OPEN_SSH: security group exposes SSH/RDP to 0.0.0.0/0
+  iam_user_no_mfa.go             IAM_USER_NO_MFA: console IAM user has no MFA device
+  ebs_unencrypted.go             EBS_UNENCRYPTED: EBS volume not encrypted at rest
+  rds_unencrypted.go             RDS_UNENCRYPTED: RDS instance storage not encrypted
+  s3_default_encryption_missing.go  S3_DEFAULT_ENCRYPTION_MISSING: bucket has no default SSE
+
+internal/rulepacks/cost/
+  pack.go          New() []rules.Rule — all 6 cost rules
+
+internal/rulepacks/security/
+  pack.go          New() []rules.Rule — all 4 security rules
+
+internal/rulepacks/dataprotection/
+  pack.go          New() []rules.Rule — 3 data-protection rules (RDS, EBS, S3)
 
 internal/models/
   findings.go      Finding, AuditReport, AuditSummary, all resource types
+  security.go      S3Bucket, SecurityGroupRule, IAMUser, RootAccountInfo, SecurityData
 ```
 
 ### Engine pipeline
@@ -177,7 +317,7 @@ LoadProfile(s)
   → AuditReport
 ```
 
-### Current rules
+### Cost rules
 
 | Rule ID | Trigger | Severity | Savings estimate |
 |---------|---------|----------|-----------------|
@@ -188,18 +328,44 @@ LoadProfile(s)
 | SAVINGS_PLAN_UNDERUTILIZED | SP coverage < 60% and on-demand cost > $100 | HIGH / MEDIUM | 10% of on-demand cost |
 | RDS_LOW_CPU | status == "available", avg CPU > 0% and < 10% | HIGH (< 5%) / MEDIUM | 30% of CE monthly cost |
 
+### Security rules
+
+| Rule ID | Trigger | Severity |
+|---------|---------|----------|
+| ROOT_ACCESS_KEY | Root account has ≥ 1 active access key (IAM GetAccountSummary) | CRITICAL |
+| S3_PUBLIC_BUCKET | `GetBucketPolicyStatus` `IsPublic == true`; no-policy buckets → NOT flagged | HIGH |
+| SG_OPEN_SSH | Security group allows port 22 or 3389 from 0.0.0.0/0 or ::/0 | HIGH |
+| IAM_USER_NO_MFA | Console IAM user (`HasLoginProfile == true`) with no MFA device | MEDIUM |
+
+### Data protection rules
+
+| Rule ID | Trigger | Severity |
+|---------|---------|----------|
+| RDS_UNENCRYPTED | RDS instance `StorageEncrypted == false` | CRITICAL |
+| EBS_UNENCRYPTED | EBS volume `Encrypted == false` | HIGH |
+| S3_DEFAULT_ENCRYPTION_MISSING | S3 bucket has no server-side encryption configuration | HIGH |
+
 ### Test coverage
 
-98 unit tests across rule engine, engine core, and CLI:
+99 unit tests across rule engine, data-protection rules, security rules, k8s provider, engine core, and CLI:
 - `EBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
 - `EBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
 - `EC2LowCPURule` — 13 subtests (CW sentinel, threshold boundary, state filtering, CE cost skip, savings proportional)
 - `NATLowTrafficRule` — 12 subtests (0/0.5GB flagged, 1.0/5GB not flagged, state filtering, fields)
 - `SavingsPlanUnderutilizedRule` — 11 subtests (HIGH/MEDIUM boundary, coverage/cost thresholds, mixed regions)
 - `RDSLowCPURule` — 13 subtests (HIGH < 5%, MEDIUM 5–10%, boundary, status filter, CE cost skip, fields)
+- `S3PublicBucketRule` — 5 tests (ID, nil data, no public, public bucket, no-policy → not flagged, multiple public)
+- `SecurityGroupOpenSSHRule` — 7 tests (ID, nil data, non-admin ports, restricted CIDR, SSH, RDP, dedup)
+- `IAMUserWithoutMFARule` — 7 tests (ID, nil data, all MFA, API-only user skipped, console user no MFA, multiple missing)
+- `RootAccessKeyExistsRule` — 4 tests (ID, nil data, no keys, has keys with field validation)
+- `EBSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → HIGH, multiple)
+- `RDSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → CRITICAL, multiple)
+- `S3DefaultEncryptionMissingRule` — 5 tests (ID, nil data, enabled → no finding, missing → HIGH, multiple)
+- k8s `CollectClusterData` — 4 tests with fake clientset (2 nodes + 3 namespaces, node fields, namespace names, empty cluster)
 - `mergeFindings` — 12 tests (dedup, severity upgrade, savings sum, metadata merge, input immutability)
 - `computeSummary` — 5 tests (severity counts, INFO handling, savings total)
 - `printSummary` — 6 tests + `topFindingsBySavings` — 5 tests + `writeReportToFile` — 3 tests
+- `runKubernetesInspect` — 2 tests (output fields, context flag forwarded to provider)
 
 ---
 
@@ -208,12 +374,17 @@ LoadProfile(s)
 - [x] NAT Gateway low-traffic detection (CloudWatch BytesOutToDestination)
 - [x] Savings Plan underutilisation detection (Cost Explorer coverage API)
 - [x] RDS low CPU detection (CloudWatch + Cost Explorer per-instance cost)
+- [x] Kubernetes provider foundation (kubeconfig loading, node + namespace collection)
+- [x] `dp kubernetes inspect` command (context, API server, node/namespace counts)
+- [x] AWS security audit: S3, IAM MFA, root access keys, open SSH/RDP security groups
+- [x] `dp aws audit security` command with table, JSON, summary, and --output flag
+- [x] AWS data protection audit: EBS encryption, RDS storage encryption, S3 default encryption
+- [x] `dp aws audit dataprotection` command with table, JSON, summary, and --output flag
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
 - [ ] Parallel region/profile collection (errgroup)
 - [ ] Exit code 1 on CRITICAL/HIGH findings (CI integration)
-- [ ] `--output-file` flag for JSON reports
 - [ ] Terraform plan analysis module
-- [ ] Kubernetes cluster cost intelligence
+- [ ] Kubernetes cluster cost intelligence (rule pack + engine integration)
 - [ ] Azure / GCP provider modules
 - [ ] SaaS backend with org-wide aggregation and scheduled audits
