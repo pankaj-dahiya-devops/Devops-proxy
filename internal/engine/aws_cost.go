@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 // AWSCostEngine is the production implementation of Engine.
@@ -85,11 +88,15 @@ func (e *AWSCostEngine) runSingleProfile(
 	return buildReport(profile.ProfileName, profile.AccountID, regions, findings, costSummary, e.policy), nil
 }
 
-// runAllProfiles loads every configured AWS profile, audits each one, and
-// merges all findings into a single report. The report-level Profile field is
-// set to "multi"; each individual Finding carries its own Profile and AccountID.
-// Profile failures are skipped non-fatally; an error is returned only when no
-// profile can be audited at all.
+// maxConcurrentProfiles caps the number of profiles audited in parallel.
+// Keeps outbound AWS API concurrency predictable when many profiles are configured.
+const maxConcurrentProfiles = 3
+
+// runAllProfiles loads every configured AWS profile, audits each one in
+// parallel (max maxConcurrentProfiles at a time), and merges all findings into
+// a single report. The report-level Profile field is set to "multi"; each
+// individual Finding carries its own Profile and AccountID.
+// Fail-fast: the first profile error cancels all remaining profile goroutines.
 func (e *AWSCostEngine) runAllProfiles(
 	ctx context.Context,
 	opts AuditOptions,
@@ -103,42 +110,60 @@ func (e *AWSCostEngine) runAllProfiles(
 		return nil, fmt.Errorf("no AWS profiles found")
 	}
 
+	sem := make(chan struct{}, maxConcurrentProfiles)
 	var (
+		mu              sync.Mutex
 		allFindings     []models.Finding
 		allRegions      []string
 		seenRegions     = make(map[string]struct{})
 		lastCostSummary *models.CostSummary
-		audited         int
 	)
 
+	g, gctx := errgroup.WithContext(ctx)
+
+PROFILES:
 	for _, profile := range profiles {
-		regions, err := e.resolveRegions(ctx, profile, opts.Regions)
-		if err != nil {
-			continue // skip this profile; others may succeed
+		profile := profile // capture loop variable for goroutine closure
+		select {
+		case sem <- struct{}{}: // acquire semaphore slot; blocks when at capacity
+		case <-gctx.Done():
+			break PROFILES // context cancelled by a prior goroutine error
 		}
 
-		regionData, costSummary, err := e.cost.CollectAll(ctx, profile, e.provider, regions, daysBack)
-		if err != nil {
-			continue
-		}
-		audited++
+		g.Go(func() error {
+			defer func() { <-sem }() // release semaphore slot on return
 
-		findings := e.evaluateAll(regionData, costSummary, profile.AccountID, profile.ProfileName)
-		allFindings = append(allFindings, findings...)
-
-		for _, r := range regions {
-			if _, seen := seenRegions[r]; !seen {
-				seenRegions[r] = struct{}{}
-				allRegions = append(allRegions, r)
+			regions, err := e.resolveRegions(gctx, profile, opts.Regions)
+			if err != nil {
+				return fmt.Errorf("resolve regions for profile %q: %w", profile.ProfileName, err)
 			}
-		}
-		if costSummary != nil {
-			lastCostSummary = costSummary
-		}
+
+			regionData, costSummary, err := e.cost.CollectAll(gctx, profile, e.provider, regions, daysBack)
+			if err != nil {
+				return fmt.Errorf("collect data for profile %q: %w", profile.ProfileName, err)
+			}
+
+			findings := e.evaluateAll(regionData, costSummary, profile.AccountID, profile.ProfileName)
+
+			mu.Lock()
+			allFindings = append(allFindings, findings...)
+			for _, r := range regions {
+				if _, seen := seenRegions[r]; !seen {
+					seenRegions[r] = struct{}{}
+					allRegions = append(allRegions, r)
+				}
+			}
+			if costSummary != nil {
+				lastCostSummary = costSummary
+			}
+			mu.Unlock()
+
+			return nil
+		})
 	}
 
-	if audited == 0 {
-		return nil, fmt.Errorf("all profiles failed; no data collected")
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	return buildReport("multi", "", allRegions, allFindings, lastCostSummary, e.policy), nil
