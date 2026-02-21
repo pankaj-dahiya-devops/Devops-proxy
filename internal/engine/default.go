@@ -10,6 +10,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
 // DefaultEngine is the production implementation of Engine.
@@ -19,6 +20,7 @@ type DefaultEngine struct {
 	provider common.AWSClientProvider
 	cost     awscost.CostCollector
 	registry rules.RuleRegistry
+	policy *policy.PolicyConfig
 }
 
 // NewDefaultEngine constructs a DefaultEngine wired to the supplied provider,
@@ -27,11 +29,13 @@ func NewDefaultEngine(
 	provider common.AWSClientProvider,
 	costCollector awscost.CostCollector,
 	registry rules.RuleRegistry,
+	policyCfg *policy.PolicyConfig,
 ) *DefaultEngine {
 	return &DefaultEngine{
 		provider: provider,
 		cost:     costCollector,
 		registry: registry,
+		policy:   policyCfg,
 	}
 }
 
@@ -78,7 +82,7 @@ func (e *DefaultEngine) runSingleProfile(
 	}
 
 	findings := e.evaluateAll(regionData, costSummary, profile.AccountID, profile.ProfileName)
-	return buildReport(profile.ProfileName, profile.AccountID, regions, findings, costSummary), nil
+	return buildReport(profile.ProfileName, profile.AccountID, regions, findings, costSummary, e.policy), nil
 }
 
 // runAllProfiles loads every configured AWS profile, audits each one, and
@@ -137,7 +141,7 @@ func (e *DefaultEngine) runAllProfiles(
 		return nil, fmt.Errorf("all profiles failed; no data collected")
 	}
 
-	return buildReport("multi", "", allRegions, allFindings, lastCostSummary), nil
+	return buildReport("multi", "", allRegions, allFindings, lastCostSummary, e.policy), nil
 }
 
 // resolveRegions returns the explicit region list when provided, otherwise
@@ -182,8 +186,11 @@ func buildReport(
 	regions []string,
 	findings []models.Finding,
 	costSummary *models.CostSummary,
+	policyCfg *policy.PolicyConfig,
 ) *models.AuditReport {
 	merged := mergeFindings(findings)
+	// Apply policy (if present)
+	merged = policy.ApplyPolicy(merged, "cost", policyCfg)
 	sortFindings(merged)
 	return &models.AuditReport{
 		ReportID:    fmt.Sprintf("audit-%d", time.Now().UnixNano()),

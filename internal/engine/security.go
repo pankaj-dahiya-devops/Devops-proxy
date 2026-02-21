@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
@@ -19,6 +20,7 @@ type DefaultSecurityEngine struct {
 	provider  common.AWSClientProvider
 	collector awssecurity.SecurityCollector
 	registry  rules.RuleRegistry
+	policy    *policy.PolicyConfig
 }
 
 // NewDefaultSecurityEngine constructs a DefaultSecurityEngine wired to the
@@ -27,11 +29,13 @@ func NewDefaultSecurityEngine(
 	provider common.AWSClientProvider,
 	collector awssecurity.SecurityCollector,
 	registry rules.RuleRegistry,
+	policyCfg *policy.PolicyConfig,
 ) *DefaultSecurityEngine {
 	return &DefaultSecurityEngine{
 		provider:  provider,
 		collector: collector,
 		registry:  registry,
+		policy:    policyCfg,
 	}
 }
 
@@ -67,7 +71,7 @@ func (e *DefaultSecurityEngine) runSingleProfileSec(
 	}
 
 	findings := e.evaluateSecurity(secData, profile.AccountID, profile.ProfileName)
-	return buildSecurityReport(profile.ProfileName, profile.AccountID, regions, findings), nil
+	return buildSecurityReport(profile.ProfileName, profile.AccountID, regions, findings, e.policy), nil
 }
 
 // runAllProfilesSec runs a security audit across every configured AWS profile
@@ -114,7 +118,7 @@ func (e *DefaultSecurityEngine) runAllProfilesSec(
 	if audited == 0 {
 		return nil, fmt.Errorf("all profiles failed; no security data collected")
 	}
-	return buildSecurityReport("multi", "", allRegions, allFindings), nil
+	return buildSecurityReport("multi", "", allRegions, allFindings, e.policy), nil
 }
 
 // resolveRegionsSec returns the explicit region list or discovers active regions.
@@ -154,7 +158,9 @@ func buildSecurityReport(
 	profile, accountID string,
 	regions []string,
 	findings []models.Finding,
+	policyCfg *policy.PolicyConfig,
 ) *models.AuditReport {
+	findings = policy.ApplyPolicy(findings, "security", policyCfg)
 	sortFindings(findings)
 	return &models.AuditReport{
 		ReportID:    fmt.Sprintf("audit-%d", time.Now().UnixNano()),
