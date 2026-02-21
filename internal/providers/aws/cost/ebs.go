@@ -59,6 +59,7 @@ func toEBSVolume(v ec2types.Volume, region string) models.EBSVolume {
 		SizeGB:     aws.ToInt32(v.Size),
 		State:      state,
 		Attached:   attached,
+		Encrypted:  aws.ToBool(v.Encrypted),
 		InstanceID: instanceID,
 		Tags:       tagsFromEC2(v.Tags),
 	}

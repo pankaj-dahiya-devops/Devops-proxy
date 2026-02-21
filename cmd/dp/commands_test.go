@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,8 +11,30 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sclient "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
+
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 )
+
+// ── kubernetes inspect test helpers ──────────────────────────────────────────
+
+// testKubeProvider implements kube.KubeClientProvider backed by a pre-built
+// fake clientset. It records the context name passed to ClientsetForContext so
+// tests can assert the flag is forwarded correctly.
+type testKubeProvider struct {
+	clientset      k8sclient.Interface
+	info           kube.ClusterInfo
+	calledWithCtx  string
+}
+
+func (p *testKubeProvider) ClientsetForContext(contextName string) (k8sclient.Interface, kube.ClusterInfo, error) {
+	p.calledWithCtx = contextName
+	return p.clientset, p.info, nil
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -280,5 +303,58 @@ func TestWriteReportToFile_ContentMatchesJSON(t *testing.T) {
 	}
 	if got.Summary.TotalEstimatedMonthlySavings != 16.00 {
 		t.Errorf("savings: got %.2f; want 16.00", got.Summary.TotalEstimatedMonthlySavings)
+	}
+}
+
+// ── runKubernetesInspect ──────────────────────────────────────────────────────
+
+// TestRunKubernetesInspect_Output verifies that all four fields (Context,
+// API Server, Nodes, Namespaces) appear in the output with the correct values.
+func TestRunKubernetesInspect_Output(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-1"}},
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-2"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "production"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "staging"}},
+	)
+	provider := &testKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "dev-cluster", Server: "https://192.168.1.100:6443"},
+	}
+
+	var buf bytes.Buffer
+	if err := runKubernetesInspect(context.Background(), provider, "", &buf); err != nil {
+		t.Fatalf("runKubernetesInspect error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"dev-cluster",
+		"https://192.168.1.100:6443",
+		"2",  // node count
+		"3",  // namespace count
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunKubernetesInspect_ContextForwarded verifies that the --context flag
+// value is passed through to the KubeClientProvider unchanged.
+func TestRunKubernetesInspect_ContextForwarded(t *testing.T) {
+	provider := &testKubeProvider{
+		clientset: fake.NewSimpleClientset(),
+		info:      kube.ClusterInfo{},
+	}
+
+	var buf bytes.Buffer
+	if err := runKubernetesInspect(context.Background(), provider, "my-context", &buf); err != nil {
+		t.Fatalf("runKubernetesInspect error: %v", err)
+	}
+
+	if provider.calledWithCtx != "my-context" {
+		t.Errorf("provider called with context %q; want my-context", provider.calledWithCtx)
 	}
 }

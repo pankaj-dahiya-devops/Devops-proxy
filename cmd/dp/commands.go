@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,8 +15,12 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
+	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
+	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
 	costpack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
+	dppack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/dataprotection"
+	secpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/security"
 )
 
 func newRootCmd() *cobra.Command {
@@ -24,6 +29,7 @@ func newRootCmd() *cobra.Command {
 		Short: "DevOps Proxy — extensible DevOps execution engine",
 	}
 	root.AddCommand(newAWSCmd())
+	root.AddCommand(newKubernetesCmd())
 	return root
 }
 
@@ -42,6 +48,8 @@ func newAuditCmd() *cobra.Command {
 		Short: "Run an audit against an AWS account",
 	}
 	cmd.AddCommand(newCostCmd())
+	cmd.AddCommand(newSecurityCmd())
+	cmd.AddCommand(newDataProtectionCmd())
 	return cmd
 }
 
@@ -108,6 +116,137 @@ func newCostCmd() *cobra.Command {
 	cmd.Flags().IntVar(&days, "days", 30, "Lookback window in days for cost and metric queries")
 	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
+	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+
+	return cmd
+}
+
+func newSecurityCmd() *cobra.Command {
+	var (
+		profile     string
+		allProfiles bool
+		regions     []string
+		reportFmt   string
+		summary     bool
+		output      string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "security",
+		Short: "Audit AWS security posture: S3 public access, open SSH, IAM MFA, root access keys",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			provider := common.NewDefaultAWSClientProvider()
+			collector := awssecurity.NewDefaultSecurityCollector()
+
+			registry := rules.NewDefaultRuleRegistry()
+			for _, r := range secpack.New() {
+				registry.Register(r)
+			}
+
+			eng := engine.NewDefaultSecurityEngine(provider, collector, registry)
+
+			opts := engine.AuditOptions{
+				AuditType:    engine.AuditTypeSecurity,
+				Profile:      profile,
+				AllProfiles:  allProfiles,
+				Regions:      regions,
+				ReportFormat: engine.ReportFormat(reportFmt),
+			}
+
+			report, err := eng.RunAudit(cmd.Context(), opts)
+			if err != nil {
+				return fmt.Errorf("security audit failed: %w", err)
+			}
+
+			if output != "" {
+				if err := writeReportToFile(output, report); err != nil {
+					return err
+				}
+			}
+
+			if summary {
+				printSummary(os.Stdout, report)
+				return nil
+			}
+			if reportFmt == "json" {
+				return printJSON(report)
+			}
+			printSecurityTable(report)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "AWS profile name (default: uses environment / default profile)")
+	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
+	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
+	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
+	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+
+	return cmd
+}
+
+func newDataProtectionCmd() *cobra.Command {
+	var (
+		profile     string
+		allProfiles bool
+		regions     []string
+		reportFmt   string
+		summary     bool
+		output      string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "dataprotection",
+		Short: "Audit AWS data protection: EBS encryption, RDS encryption, S3 default encryption",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			provider := common.NewDefaultAWSClientProvider()
+			costCollector := awscost.NewDefaultCostCollector()
+			secCollector := awssecurity.NewDefaultSecurityCollector()
+
+			registry := rules.NewDefaultRuleRegistry()
+			for _, r := range dppack.New() {
+				registry.Register(r)
+			}
+
+			eng := engine.NewDefaultDataProtectionEngine(provider, costCollector, secCollector, registry)
+
+			opts := engine.AuditOptions{
+				AuditType:    engine.AuditTypeDataProtection,
+				Profile:      profile,
+				AllProfiles:  allProfiles,
+				Regions:      regions,
+				ReportFormat: engine.ReportFormat(reportFmt),
+			}
+
+			report, err := eng.RunAudit(cmd.Context(), opts)
+			if err != nil {
+				return fmt.Errorf("data protection audit failed: %w", err)
+			}
+
+			if output != "" {
+				if err := writeReportToFile(output, report); err != nil {
+					return err
+				}
+			}
+
+			if summary {
+				printSummary(os.Stdout, report)
+				return nil
+			}
+			if reportFmt == "json" {
+				return printJSON(report)
+			}
+			printDataProtectionTable(report)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&profile, "profile", "", "AWS profile name (default: uses environment / default profile)")
+	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
+	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
+	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 
 	return cmd
@@ -186,6 +325,92 @@ func topFindingsBySavings(findings []models.Finding, n int) []models.Finding {
 	return sorted[:n]
 }
 
+// printDataProtectionTable renders the data-protection audit findings table.
+// Like security findings, these have no estimated savings; the last column
+// shows the resource type instead.
+func printDataProtectionTable(report *models.AuditReport) {
+	s := report.Summary
+	fmt.Printf(
+		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+		report.Profile,
+		report.AccountID,
+		len(report.Regions),
+		s.TotalFindings,
+	)
+
+	if len(report.Findings) == 0 {
+		fmt.Println("No findings.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("%-42s  %-15s  %-10s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE")
+	fmt.Println(strings.Repeat("-", 88))
+	for _, f := range report.Findings {
+		fmt.Printf("%-42s  %-15s  %-10s  %s\n",
+			f.ResourceID,
+			f.Region,
+			string(f.Severity),
+			string(f.ResourceType),
+		)
+	}
+}
+
+// ── kubernetes commands ───────────────────────────────────────────────────────
+
+func newKubernetesCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "kubernetes",
+		Short: "Kubernetes provider commands",
+	}
+	cmd.AddCommand(newInspectCmd())
+	return cmd
+}
+
+func newInspectCmd() *cobra.Command {
+	var contextName string
+
+	cmd := &cobra.Command{
+		Use:   "inspect",
+		Short: "Inspect a Kubernetes cluster: context, API server, node count, namespace count",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			provider := kube.NewDefaultKubeClientProvider()
+			return runKubernetesInspect(cmd.Context(), provider, contextName, os.Stdout)
+		},
+	}
+
+	cmd.Flags().StringVar(&contextName, "context", "", "Kubeconfig context to use (default: current context)")
+
+	return cmd
+}
+
+// runKubernetesInspect is the testable core of the inspect command.
+// It accepts a KubeClientProvider so tests can inject a fake clientset.
+func runKubernetesInspect(ctx context.Context, provider kube.KubeClientProvider, contextName string, w io.Writer) error {
+	clientset, info, err := provider.ClientsetForContext(contextName)
+	if err != nil {
+		return fmt.Errorf("connect to cluster: %w", err)
+	}
+
+	data, err := kube.CollectClusterData(ctx, clientset, info)
+	if err != nil {
+		return fmt.Errorf("collect cluster data: %w", err)
+	}
+
+	printClusterInspect(w, data)
+	return nil
+}
+
+// printClusterInspect writes the four-line cluster summary to w.
+func printClusterInspect(w io.Writer, data *kube.ClusterData) {
+	fmt.Fprintf(w, "Context:     %s\n", data.ClusterInfo.ContextName)
+	fmt.Fprintf(w, "API Server:  %s\n", data.ClusterInfo.Server)
+	fmt.Fprintf(w, "Nodes:       %d\n", len(data.Nodes))
+	fmt.Fprintf(w, "Namespaces:  %d\n", len(data.Namespaces))
+}
+
+// ── AWS output renderers ──────────────────────────────────────────────────────
+
 // printTable renders a human-readable summary followed by a findings table.
 func printTable(report *models.AuditReport) {
 	s := report.Summary
@@ -212,6 +437,37 @@ func printTable(report *models.AuditReport) {
 			f.Region,
 			string(f.Severity),
 			f.EstimatedMonthlySavings,
+		)
+	}
+}
+
+// printSecurityTable renders the security audit findings table.
+// Security findings do not have estimated savings so the last column shows
+// the resource type instead.
+func printSecurityTable(report *models.AuditReport) {
+	s := report.Summary
+	fmt.Printf(
+		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+		report.Profile,
+		report.AccountID,
+		len(report.Regions),
+		s.TotalFindings,
+	)
+
+	if len(report.Findings) == 0 {
+		fmt.Println("No findings.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("%-42s  %-15s  %-10s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE")
+	fmt.Println(strings.Repeat("-", 88))
+	for _, f := range report.Findings {
+		fmt.Printf("%-42s  %-15s  %-10s  %s\n",
+			f.ResourceID,
+			f.Region,
+			string(f.Severity),
+			string(f.ResourceType),
 		)
 	}
 }

@@ -1,0 +1,211 @@
+package engine
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
+	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
+	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
+)
+
+// DefaultDataProtectionEngine implements Engine for AuditTypeDataProtection.
+// It coordinates data collection from two sources:
+//   - CostCollector: provides per-region EBSVolumes and RDSInstances with
+//     their Encrypted / StorageEncrypted fields populated.
+//   - SecurityCollector: provides account-level S3 bucket data with
+//     DefaultEncryptionEnabled populated by GetBucketEncryption.
+//
+// Rules are evaluated per-region for EBS/RDS and once globally for S3.
+// The engine never calls AWS SDK clients directly.
+type DefaultDataProtectionEngine struct {
+	provider common.AWSClientProvider
+	cost     awscost.CostCollector
+	security awssecurity.SecurityCollector
+	registry rules.RuleRegistry
+}
+
+// NewDefaultDataProtectionEngine constructs a DefaultDataProtectionEngine
+// wired to the supplied provider, cost collector, security collector, and
+// rule registry.
+func NewDefaultDataProtectionEngine(
+	provider common.AWSClientProvider,
+	cost awscost.CostCollector,
+	security awssecurity.SecurityCollector,
+	registry rules.RuleRegistry,
+) *DefaultDataProtectionEngine {
+	return &DefaultDataProtectionEngine{
+		provider: provider,
+		cost:     cost,
+		security: security,
+		registry: registry,
+	}
+}
+
+// RunAudit implements Engine. Only AuditTypeDataProtection is accepted.
+func (e *DefaultDataProtectionEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
+	if opts.AuditType != AuditTypeDataProtection {
+		return nil, fmt.Errorf("unsupported audit type: %q", opts.AuditType)
+	}
+	if opts.AllProfiles {
+		return e.runAllProfilesDP(ctx, opts)
+	}
+	return e.runSingleProfileDP(ctx, opts)
+}
+
+// runSingleProfileDP executes a data-protection audit for one AWS profile.
+func (e *DefaultDataProtectionEngine) runSingleProfileDP(
+	ctx context.Context,
+	opts AuditOptions,
+) (*models.AuditReport, error) {
+	profile, err := e.provider.LoadProfile(ctx, opts.Profile)
+	if err != nil {
+		return nil, fmt.Errorf("load profile %q: %w", opts.Profile, err)
+	}
+
+	regions, err := e.resolveRegionsDP(ctx, profile, opts.Regions)
+	if err != nil {
+		return nil, fmt.Errorf("resolve regions for profile %q: %w", profile.ProfileName, err)
+	}
+
+	// DaysBack=1 minimises CloudWatch API calls; the data protection engine
+	// does not use CPU or cost metrics, only the Encrypted / StorageEncrypted
+	// fields which come from DescribeVolumes / DescribeDBInstances directly.
+	regionData, _, err := e.cost.CollectAll(ctx, profile, e.provider, regions, 1)
+	if err != nil {
+		return nil, fmt.Errorf("collect region data for profile %q: %w", profile.ProfileName, err)
+	}
+
+	secData, err := e.security.CollectAll(ctx, profile, e.provider, regions)
+	if err != nil {
+		return nil, fmt.Errorf("collect security data for profile %q: %w", profile.ProfileName, err)
+	}
+
+	findings := e.evaluateDataProtection(regionData, secData, profile.AccountID, profile.ProfileName)
+	return buildDataProtectionReport(profile.ProfileName, profile.AccountID, regions, findings), nil
+}
+
+// runAllProfilesDP runs a data-protection audit across every configured AWS
+// profile and merges findings into a single report. Profile failures are
+// skipped non-fatally; an error is returned only when no profile succeeds.
+func (e *DefaultDataProtectionEngine) runAllProfilesDP(
+	ctx context.Context,
+	opts AuditOptions,
+) (*models.AuditReport, error) {
+	profiles, err := e.provider.LoadAllProfiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load all profiles: %w", err)
+	}
+	if len(profiles) == 0 {
+		return nil, fmt.Errorf("no AWS profiles found")
+	}
+
+	var (
+		allFindings []models.Finding
+		allRegions  []string
+		seenRegions = make(map[string]struct{})
+		audited     int
+	)
+
+	for _, profile := range profiles {
+		regions, err := e.resolveRegionsDP(ctx, profile, opts.Regions)
+		if err != nil {
+			continue
+		}
+		regionData, _, err := e.cost.CollectAll(ctx, profile, e.provider, regions, 1)
+		if err != nil {
+			continue
+		}
+		secData, err := e.security.CollectAll(ctx, profile, e.provider, regions)
+		if err != nil {
+			continue
+		}
+		audited++
+		allFindings = append(allFindings, e.evaluateDataProtection(regionData, secData, profile.AccountID, profile.ProfileName)...)
+		for _, r := range regions {
+			if _, seen := seenRegions[r]; !seen {
+				seenRegions[r] = struct{}{}
+				allRegions = append(allRegions, r)
+			}
+		}
+	}
+
+	if audited == 0 {
+		return nil, fmt.Errorf("all profiles failed; no data collected")
+	}
+	return buildDataProtectionReport("multi", "", allRegions, allFindings), nil
+}
+
+// resolveRegionsDP returns explicit regions or discovers active regions.
+func (e *DefaultDataProtectionEngine) resolveRegionsDP(
+	ctx context.Context,
+	profile *common.ProfileConfig,
+	explicit []string,
+) ([]string, error) {
+	if len(explicit) > 0 {
+		return explicit, nil
+	}
+	return e.provider.GetActiveRegions(ctx, profile)
+}
+
+// evaluateDataProtection applies all registered data-protection rules:
+//   - Per-region: one RuleContext per region; EBS and RDS rules fire on
+//     actual resource data; the S3 rule sees empty Buckets and returns nothing.
+//   - Global: one synthetic RuleContext with only Security.Buckets populated;
+//     EBS and RDS rules see empty slices and return nothing.
+//
+// Results from all contexts are merged (same ResourceID+Region deduplication)
+// before being returned.
+func (e *DefaultDataProtectionEngine) evaluateDataProtection(
+	regionData []models.RegionData,
+	secData *models.SecurityData,
+	accountID, profile string,
+) []models.Finding {
+	var raw []models.Finding
+
+	// Per-region: EBSUnencryptedRule and RDSUnencryptedRule fire here.
+	for i := range regionData {
+		rctx := rules.RuleContext{
+			AccountID:  accountID,
+			Profile:    profile,
+			RegionData: &regionData[i],
+		}
+		raw = append(raw, e.registry.EvaluateAll(rctx)...)
+	}
+
+	// Global: S3DefaultEncryptionMissingRule fires here.
+	rctx := rules.RuleContext{
+		AccountID: accountID,
+		Profile:   profile,
+		RegionData: &models.RegionData{
+			Region:   "global",
+			Security: *secData,
+		},
+	}
+	raw = append(raw, e.registry.EvaluateAll(rctx)...)
+
+	return mergeFindings(raw)
+}
+
+// buildDataProtectionReport assembles the final AuditReport for a data
+// protection audit. No cost savings are associated with these findings.
+func buildDataProtectionReport(
+	profile, accountID string,
+	regions []string,
+	findings []models.Finding,
+) *models.AuditReport {
+	sortFindings(findings)
+	return &models.AuditReport{
+		ReportID:    fmt.Sprintf("audit-%d", time.Now().UnixNano()),
+		GeneratedAt: time.Now().UTC(),
+		AuditType:   string(AuditTypeDataProtection),
+		Profile:     profile,
+		AccountID:   accountID,
+		Regions:     regions,
+		Summary:     computeSummary(findings),
+		Findings:    findings,
+	}
+}

@@ -56,14 +56,15 @@ func collectRDSInstances(
 // toRDSInstance converts an SDK DBInstance to the internal model.
 func toRDSInstance(db rdstypes.DBInstance, region string) models.RDSInstance {
 	return models.RDSInstance{
-		DBInstanceID:    aws.ToString(db.DBInstanceIdentifier),
-		Region:          region,
-		DBInstanceClass: aws.ToString(db.DBInstanceClass),
-		Engine:          aws.ToString(db.Engine),
-		MultiAZ:         aws.ToBool(db.MultiAZ),
-		Status:          aws.ToString(db.DBInstanceStatus),
-		AvgCPUPercent:   0, // enriched by fetchRDSAvgCPU after collection
-		Tags:            tagsFromRDS(db.TagList),
+		DBInstanceID:     aws.ToString(db.DBInstanceIdentifier),
+		Region:           region,
+		DBInstanceClass:  aws.ToString(db.DBInstanceClass),
+		Engine:           aws.ToString(db.Engine),
+		MultiAZ:          aws.ToBool(db.MultiAZ),
+		Status:           aws.ToString(db.DBInstanceStatus),
+		StorageEncrypted: aws.ToBool(db.StorageEncrypted),
+		AvgCPUPercent:    0, // enriched by fetchRDSAvgCPU after collection
+		Tags:             tagsFromRDS(db.TagList),
 	}
 }
 
