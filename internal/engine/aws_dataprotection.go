@@ -13,7 +13,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
 )
 
-// DefaultDataProtectionEngine implements Engine for AuditTypeDataProtection.
+// AWSDataProtectionEngine implements Engine for AuditTypeDataProtection.
 // It coordinates data collection from two sources:
 //   - CostCollector: provides per-region EBSVolumes and RDSInstances with
 //     their Encrypted / StorageEncrypted fields populated.
@@ -22,7 +22,7 @@ import (
 //
 // Rules are evaluated per-region for EBS/RDS and once globally for S3.
 // The engine never calls AWS SDK clients directly.
-type DefaultDataProtectionEngine struct {
+type AWSDataProtectionEngine struct {
 	provider common.AWSClientProvider
 	cost     awscost.CostCollector
 	security awssecurity.SecurityCollector
@@ -30,17 +30,17 @@ type DefaultDataProtectionEngine struct {
 	policy   *policy.PolicyConfig
 }
 
-// NewDefaultDataProtectionEngine constructs a DefaultDataProtectionEngine
+// NewAWSDataProtectionEngine constructs a AWSDataProtectionEngine
 // wired to the supplied provider, cost collector, security collector, and
 // rule registry.
-func NewDefaultDataProtectionEngine(
+func NewAWSDataProtectionEngine(
 	provider common.AWSClientProvider,
 	cost awscost.CostCollector,
 	security awssecurity.SecurityCollector,
 	registry rules.RuleRegistry,
 	policyCfg *policy.PolicyConfig,
-) *DefaultDataProtectionEngine {
-	return &DefaultDataProtectionEngine{
+) *AWSDataProtectionEngine {
+	return &AWSDataProtectionEngine{
 		provider: provider,
 		cost:     cost,
 		security: security,
@@ -50,7 +50,7 @@ func NewDefaultDataProtectionEngine(
 }
 
 // RunAudit implements Engine. Only AuditTypeDataProtection is accepted.
-func (e *DefaultDataProtectionEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
+func (e *AWSDataProtectionEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
 	if opts.AuditType != AuditTypeDataProtection {
 		return nil, fmt.Errorf("unsupported audit type: %q", opts.AuditType)
 	}
@@ -61,7 +61,7 @@ func (e *DefaultDataProtectionEngine) RunAudit(ctx context.Context, opts AuditOp
 }
 
 // runSingleProfileDP executes a data-protection audit for one AWS profile.
-func (e *DefaultDataProtectionEngine) runSingleProfileDP(
+func (e *AWSDataProtectionEngine) runSingleProfileDP(
 	ctx context.Context,
 	opts AuditOptions,
 ) (*models.AuditReport, error) {
@@ -95,7 +95,7 @@ func (e *DefaultDataProtectionEngine) runSingleProfileDP(
 // runAllProfilesDP runs a data-protection audit across every configured AWS
 // profile and merges findings into a single report. Profile failures are
 // skipped non-fatally; an error is returned only when no profile succeeds.
-func (e *DefaultDataProtectionEngine) runAllProfilesDP(
+func (e *AWSDataProtectionEngine) runAllProfilesDP(
 	ctx context.Context,
 	opts AuditOptions,
 ) (*models.AuditReport, error) {
@@ -144,7 +144,7 @@ func (e *DefaultDataProtectionEngine) runAllProfilesDP(
 }
 
 // resolveRegionsDP returns explicit regions or discovers active regions.
-func (e *DefaultDataProtectionEngine) resolveRegionsDP(
+func (e *AWSDataProtectionEngine) resolveRegionsDP(
 	ctx context.Context,
 	profile *common.ProfileConfig,
 	explicit []string,
@@ -163,7 +163,7 @@ func (e *DefaultDataProtectionEngine) resolveRegionsDP(
 //
 // Results from all contexts are merged (same ResourceID+Region deduplication)
 // before being returned.
-func (e *DefaultDataProtectionEngine) evaluateDataProtection(
+func (e *AWSDataProtectionEngine) evaluateDataProtection(
 	regionData []models.RegionData,
 	secData *models.SecurityData,
 	accountID, profile string,

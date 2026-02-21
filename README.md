@@ -377,9 +377,9 @@ cmd/dp/
 
 internal/engine/
   engine.go           Engine interface, AuditOptions, AuditType
-  default.go          DefaultEngine: orchestrates cost collection → rules → merge → sort → report
-  security.go         DefaultSecurityEngine: orchestrates security collection → rules → report
-  dataprotection.go   DefaultDataProtectionEngine: EBS/RDS (cost collector) + S3 (security collector)
+  aws_cost.go         AWSCostEngine: orchestrates cost collection → rules → merge → sort → report
+  aws_security.go     AWSSecurityEngine: orchestrates security collection → rules → report
+  aws_dataprotection.go AWSDataProtectionEngine: EBS/RDS (cost collector) + S3 (security collector)
 
 internal/providers/aws/
   common/          AWSClientProvider: profile loading, region discovery

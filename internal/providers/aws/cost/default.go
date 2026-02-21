@@ -3,9 +3,11 @@ package cost
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
@@ -35,6 +37,9 @@ func NewDefaultCostCollectorWithFactory(f costClientFactory) *DefaultCostCollect
 // CostCollector implementation
 // ---------------------------------------------------------------------------
 
+// maxConcurrentRegions is the maximum number of regions collected in parallel.
+const maxConcurrentRegions = 5
+
 // CollectAll is the top-level coordinator.
 //
 // Flow:
@@ -43,10 +48,11 @@ func NewDefaultCostCollectorWithFactory(f costClientFactory) *DefaultCostCollect
 //  3. Fetch Savings Plan coverage per region (one account-level CE call).
 //  4. For each region: obtain a regional aws.Config via provider, then call
 //     CollectRegion to gather EC2, EBS, NAT, RDS, and LB data.
+//     Regions are collected in parallel (up to maxConcurrentRegions at once)
+//     using errgroup; if any region fails the entire call fails.
 //  5. Attach the pre-fetched SP coverage to each RegionData.
 //
-// Regions that fail collection are skipped. CE failures result in a nil
-// CostSummary (non-fatal). An error is only returned when all regions fail.
+// CE failures result in a nil CostSummary (non-fatal).
 func (d *DefaultCostCollector) CollectAll(
 	ctx context.Context,
 	profile *common.ProfileConfig,
@@ -75,11 +81,28 @@ func (d *DefaultCostCollector) CollectAll(
 	ceClients := d.factory(ceCfg)
 	spCoverage, _ := collectSavingsPlanCoverage(ctx, ceClients.CE, start, end)
 
-	// 3. Per-region resource collection.
-	var allRegionData []models.RegionData
-	var lastErr error
+	// 3. Per-region resource collection — parallelised with a bounded errgroup.
+	// The semaphore channel limits concurrent in-flight region calls to
+	// maxConcurrentRegions. If any region fails, errgroup cancels the context
+	// and the first error is returned.
+	sem := make(chan struct{}, maxConcurrentRegions)
 
+	var (
+		mu           sync.Mutex
+		allRegionData []models.RegionData
+	)
+
+	g, gctx := errgroup.WithContext(ctx)
+
+REGIONS:
 	for _, region := range regions {
+		region := region // capture loop variable for goroutine closure
+		select {
+		case sem <- struct{}{}: // acquire semaphore slot; blocks when at capacity
+		case <-gctx.Done():
+			break REGIONS // context cancelled by a prior goroutine error
+		}
+
 		regionalCfg := provider.ConfigForRegion(profile, region)
 		opts := CollectOptions{
 			Region:    region,
@@ -88,22 +111,28 @@ func (d *DefaultCostCollector) CollectAll(
 			DaysBack:  days,
 		}
 
-		rd, regionErr := d.CollectRegion(ctx, regionalCfg, opts)
-		if regionErr != nil {
-			lastErr = regionErr
-			continue // skip failed regions
-		}
+		g.Go(func() error {
+			defer func() { <-sem }() // release semaphore slot on return
 
-		// 4. Attach Savings Plan coverage for this region.
-		if cov, ok := spCoverage[region]; ok {
-			rd.SavingsPlanCoverage = []models.SavingsPlanCoverage{cov}
-		}
+			rd, err := d.CollectRegion(gctx, regionalCfg, opts)
+			if err != nil {
+				return fmt.Errorf("collect region %s: %w", region, err)
+			}
 
-		allRegionData = append(allRegionData, *rd)
+			// 4. Attach Savings Plan coverage for this region.
+			if cov, ok := spCoverage[region]; ok {
+				rd.SavingsPlanCoverage = []models.SavingsPlanCoverage{cov}
+			}
+
+			mu.Lock()
+			allRegionData = append(allRegionData, *rd)
+			mu.Unlock()
+			return nil
+		})
 	}
 
-	if len(allRegionData) == 0 && lastErr != nil {
-		return nil, costSummary, fmt.Errorf("all region collections failed, last error: %w", lastErr)
+	if err := g.Wait(); err != nil {
+		return nil, costSummary, err
 	}
 
 	return allRegionData, costSummary, nil

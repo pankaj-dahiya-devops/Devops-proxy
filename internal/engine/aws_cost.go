@@ -13,25 +13,25 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 )
 
-// DefaultEngine is the production implementation of Engine.
+// AWSCostEngine is the production implementation of Engine.
 // It coordinates data collection, rule evaluation, and report assembly.
 // It never calls the AWS SDK, LLM, or any external service directly.
-type DefaultEngine struct {
+type AWSCostEngine struct {
 	provider common.AWSClientProvider
 	cost     awscost.CostCollector
 	registry rules.RuleRegistry
 	policy *policy.PolicyConfig
 }
 
-// NewDefaultEngine constructs a DefaultEngine wired to the supplied provider,
+// NewAWSCostEngine constructs a AWSCostEngine wired to the supplied provider,
 // cost collector, and rule registry.
-func NewDefaultEngine(
+func NewAWSCostEngine(
 	provider common.AWSClientProvider,
 	costCollector awscost.CostCollector,
 	registry rules.RuleRegistry,
 	policyCfg *policy.PolicyConfig,
-) *DefaultEngine {
-	return &DefaultEngine{
+) *AWSCostEngine {
+	return &AWSCostEngine{
 		provider: provider,
 		cost:     costCollector,
 		registry: registry,
@@ -43,7 +43,7 @@ func NewDefaultEngine(
 // It loads the requested AWS profile(s), discovers regions if not explicitly
 // provided, collects cost data, evaluates all registered rules, and returns a
 // fully populated AuditReport.
-func (e *DefaultEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
+func (e *AWSCostEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
 	if opts.AuditType != AuditTypeCost {
 		return nil, fmt.Errorf("unsupported audit type: %q", opts.AuditType)
 	}
@@ -61,7 +61,7 @@ func (e *DefaultEngine) RunAudit(ctx context.Context, opts AuditOptions) (*model
 
 // runSingleProfile executes a cost audit for one AWS profile and returns the
 // resulting report.
-func (e *DefaultEngine) runSingleProfile(
+func (e *AWSCostEngine) runSingleProfile(
 	ctx context.Context,
 	opts AuditOptions,
 	daysBack int,
@@ -90,7 +90,7 @@ func (e *DefaultEngine) runSingleProfile(
 // set to "multi"; each individual Finding carries its own Profile and AccountID.
 // Profile failures are skipped non-fatally; an error is returned only when no
 // profile can be audited at all.
-func (e *DefaultEngine) runAllProfiles(
+func (e *AWSCostEngine) runAllProfiles(
 	ctx context.Context,
 	opts AuditOptions,
 	daysBack int,
@@ -146,7 +146,7 @@ func (e *DefaultEngine) runAllProfiles(
 
 // resolveRegions returns the explicit region list when provided, otherwise
 // calls GetActiveRegions to discover opted-in regions for the profile.
-func (e *DefaultEngine) resolveRegions(
+func (e *AWSCostEngine) resolveRegions(
 	ctx context.Context,
 	profile *common.ProfileConfig,
 	explicit []string,
@@ -159,7 +159,7 @@ func (e *DefaultEngine) resolveRegions(
 
 // evaluateAll applies every registered rule to each region's collected data
 // and returns the merged findings slice.
-func (e *DefaultEngine) evaluateAll(
+func (e *AWSCostEngine) evaluateAll(
 	regionData []models.RegionData,
 	costSummary *models.CostSummary,
 	accountID, profile string,

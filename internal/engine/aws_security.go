@@ -12,26 +12,26 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
 )
 
-// DefaultSecurityEngine implements Engine for AuditTypeSecurity.
+// AWSSecurityEngine implements Engine for AuditTypeSecurity.
 // It coordinates security data collection, rule evaluation, and report assembly.
 // It never calls AWS SDK or LLM clients directly; all calls are delegated to
 // the SecurityCollector and RuleRegistry.
-type DefaultSecurityEngine struct {
+type AWSSecurityEngine struct {
 	provider  common.AWSClientProvider
 	collector awssecurity.SecurityCollector
 	registry  rules.RuleRegistry
 	policy    *policy.PolicyConfig
 }
 
-// NewDefaultSecurityEngine constructs a DefaultSecurityEngine wired to the
+// NewAWSSecurityEngine constructs a AWSSecurityEngine wired to the
 // supplied provider, security collector, and rule registry.
-func NewDefaultSecurityEngine(
+func NewAWSSecurityEngine(
 	provider common.AWSClientProvider,
 	collector awssecurity.SecurityCollector,
 	registry rules.RuleRegistry,
 	policyCfg *policy.PolicyConfig,
-) *DefaultSecurityEngine {
-	return &DefaultSecurityEngine{
+) *AWSSecurityEngine {
+	return &AWSSecurityEngine{
 		provider:  provider,
 		collector: collector,
 		registry:  registry,
@@ -40,7 +40,7 @@ func NewDefaultSecurityEngine(
 }
 
 // RunAudit implements Engine. Only AuditTypeSecurity is accepted.
-func (e *DefaultSecurityEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
+func (e *AWSSecurityEngine) RunAudit(ctx context.Context, opts AuditOptions) (*models.AuditReport, error) {
 	if opts.AuditType != AuditTypeSecurity {
 		return nil, fmt.Errorf("unsupported audit type: %q", opts.AuditType)
 	}
@@ -51,7 +51,7 @@ func (e *DefaultSecurityEngine) RunAudit(ctx context.Context, opts AuditOptions)
 }
 
 // runSingleProfileSec executes a security audit for one AWS profile.
-func (e *DefaultSecurityEngine) runSingleProfileSec(
+func (e *AWSSecurityEngine) runSingleProfileSec(
 	ctx context.Context,
 	opts AuditOptions,
 ) (*models.AuditReport, error) {
@@ -77,7 +77,7 @@ func (e *DefaultSecurityEngine) runSingleProfileSec(
 // runAllProfilesSec runs a security audit across every configured AWS profile
 // and merges findings into a single report. Profile failures are skipped
 // non-fatally; an error is returned only when no profile can be audited.
-func (e *DefaultSecurityEngine) runAllProfilesSec(
+func (e *AWSSecurityEngine) runAllProfilesSec(
 	ctx context.Context,
 	opts AuditOptions,
 ) (*models.AuditReport, error) {
@@ -122,7 +122,7 @@ func (e *DefaultSecurityEngine) runAllProfilesSec(
 }
 
 // resolveRegionsSec returns the explicit region list or discovers active regions.
-func (e *DefaultSecurityEngine) resolveRegionsSec(
+func (e *AWSSecurityEngine) resolveRegionsSec(
 	ctx context.Context,
 	profile *common.ProfileConfig,
 	explicit []string,
@@ -137,7 +137,7 @@ func (e *DefaultSecurityEngine) resolveRegionsSec(
 // snapshot and evaluates all registered security rules against it.
 // A single RuleContext is used because security data is account-level: IAM,
 // root, and S3 are global; SG rules carry their own region via the Region field.
-func (e *DefaultSecurityEngine) evaluateSecurity(
+func (e *AWSSecurityEngine) evaluateSecurity(
 	secData *models.SecurityData,
 	accountID, profile string,
 ) []models.Finding {
