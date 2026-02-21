@@ -13,6 +13,7 @@ import (
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/engine"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
@@ -53,6 +54,19 @@ func newAuditCmd() *cobra.Command {
 	return cmd
 }
 
+// loadPolicyFile returns a PolicyConfig for the given path.
+// If path is empty, it auto-discovers dp.yaml in the current directory.
+// If neither is found, it returns nil (policy disabled — default behaviour).
+func loadPolicyFile(path string) (*policy.PolicyConfig, error) {
+	if path != "" {
+		return policy.LoadPolicy(path)
+	}
+	if _, err := os.Stat("dp.yaml"); err == nil {
+		return policy.LoadPolicy("dp.yaml")
+	}
+	return nil, nil
+}
+
 func newCostCmd() *cobra.Command {
 	var (
 		profile     string
@@ -62,12 +76,18 @@ func newCostCmd() *cobra.Command {
 		reportFmt   string
 		summary     bool
 		output      string
+		policyPath  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "cost",
 		Short: "Audit AWS cost and identify wasted spend",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policyCfg, err := loadPolicyFile(policyPath)
+			if err != nil {
+				return fmt.Errorf("load policy: %w", err)
+			}
+
 			provider := common.NewDefaultAWSClientProvider()
 			collector := awscost.NewDefaultCostCollector()
 
@@ -76,7 +96,7 @@ func newCostCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultEngine(provider, collector, registry, nil) // No policy for now; will add flags and loading logic later
+			eng := engine.NewDefaultEngine(provider, collector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeCost,
@@ -117,6 +137,7 @@ func newCostCmd() *cobra.Command {
 	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 
 	return cmd
 }
@@ -129,12 +150,18 @@ func newSecurityCmd() *cobra.Command {
 		reportFmt   string
 		summary     bool
 		output      string
+		policyPath  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "security",
 		Short: "Audit AWS security posture: S3 public access, open SSH, IAM MFA, root access keys",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policyCfg, err := loadPolicyFile(policyPath)
+			if err != nil {
+				return fmt.Errorf("load policy: %w", err)
+			}
+
 			provider := common.NewDefaultAWSClientProvider()
 			collector := awssecurity.NewDefaultSecurityCollector()
 
@@ -143,7 +170,7 @@ func newSecurityCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultSecurityEngine(provider, collector, registry)
+			eng := engine.NewDefaultSecurityEngine(provider, collector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeSecurity,
@@ -182,6 +209,7 @@ func newSecurityCmd() *cobra.Command {
 	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 
 	return cmd
 }
@@ -194,12 +222,18 @@ func newDataProtectionCmd() *cobra.Command {
 		reportFmt   string
 		summary     bool
 		output      string
+		policyPath  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "dataprotection",
 		Short: "Audit AWS data protection: EBS encryption, RDS encryption, S3 default encryption",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			policyCfg, err := loadPolicyFile(policyPath)
+			if err != nil {
+				return fmt.Errorf("load policy: %w", err)
+			}
+
 			provider := common.NewDefaultAWSClientProvider()
 			costCollector := awscost.NewDefaultCostCollector()
 			secCollector := awssecurity.NewDefaultSecurityCollector()
@@ -209,7 +243,7 @@ func newDataProtectionCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultDataProtectionEngine(provider, costCollector, secCollector, registry)
+			eng := engine.NewDefaultDataProtectionEngine(provider, costCollector, secCollector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeDataProtection,
@@ -248,6 +282,7 @@ func newDataProtectionCmd() *cobra.Command {
 	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 
 	return cmd
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
@@ -26,6 +27,7 @@ type DefaultDataProtectionEngine struct {
 	cost     awscost.CostCollector
 	security awssecurity.SecurityCollector
 	registry rules.RuleRegistry
+	policy   *policy.PolicyConfig
 }
 
 // NewDefaultDataProtectionEngine constructs a DefaultDataProtectionEngine
@@ -36,12 +38,14 @@ func NewDefaultDataProtectionEngine(
 	cost awscost.CostCollector,
 	security awssecurity.SecurityCollector,
 	registry rules.RuleRegistry,
+	policyCfg *policy.PolicyConfig,
 ) *DefaultDataProtectionEngine {
 	return &DefaultDataProtectionEngine{
 		provider: provider,
 		cost:     cost,
 		security: security,
 		registry: registry,
+		policy:   policyCfg,
 	}
 }
 
@@ -85,7 +89,7 @@ func (e *DefaultDataProtectionEngine) runSingleProfileDP(
 	}
 
 	findings := e.evaluateDataProtection(regionData, secData, profile.AccountID, profile.ProfileName)
-	return buildDataProtectionReport(profile.ProfileName, profile.AccountID, regions, findings), nil
+	return buildDataProtectionReport(profile.ProfileName, profile.AccountID, regions, findings, e.policy), nil
 }
 
 // runAllProfilesDP runs a data-protection audit across every configured AWS
@@ -136,7 +140,7 @@ func (e *DefaultDataProtectionEngine) runAllProfilesDP(
 	if audited == 0 {
 		return nil, fmt.Errorf("all profiles failed; no data collected")
 	}
-	return buildDataProtectionReport("multi", "", allRegions, allFindings), nil
+	return buildDataProtectionReport("multi", "", allRegions, allFindings, e.policy), nil
 }
 
 // resolveRegionsDP returns explicit regions or discovers active regions.
@@ -196,7 +200,9 @@ func buildDataProtectionReport(
 	profile, accountID string,
 	regions []string,
 	findings []models.Finding,
+	policyCfg *policy.PolicyConfig,
 ) *models.AuditReport {
+	findings = policy.ApplyPolicy(findings, "dataprotection", policyCfg)
 	sortFindings(findings)
 	return &models.AuditReport{
 		ReportID:    fmt.Sprintf("audit-%d", time.Now().UnixNano()),

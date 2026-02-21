@@ -21,6 +21,72 @@ Currently implements: **AWS cost audit**, **AWS security audit**, and **AWS data
 
 ---
 
+## Policy Configuration (`dp.yaml`)
+
+`dp` supports an optional policy file that controls which findings are surfaced
+and at what severity — without changing any rule logic.
+
+The policy layer sits between rule evaluation and report assembly:
+
+```
+Collect → Evaluate → Merge → ApplyPolicy → Sort → Summary → AuditReport
+```
+
+### Example `dp.yaml`
+
+```yaml
+version: 1
+
+domains:
+  cost:
+    enabled: true   # set to false to suppress ALL cost findings
+
+rules:
+  EC2_LOW_CPU:
+    enabled: false  # silence this rule entirely
+  SG_OPEN_SSH:
+    severity: CRITICAL  # escalate from HIGH to CRITICAL
+```
+
+### Behaviour
+
+| Scenario | Result |
+|----------|--------|
+| No policy file | Default behaviour — all findings returned at rule-defined severity |
+| `domains.cost.enabled: false` | All cost findings dropped |
+| `rules.EC2_LOW_CPU.enabled: false` | All `EC2_LOW_CPU` findings dropped |
+| `rules.SG_OPEN_SSH.severity: CRITICAL` | Finding severity replaced with `CRITICAL` |
+| Rule not listed in policy | Pass through unchanged |
+
+### Using `--policy`
+
+Pass the policy file explicitly, or place `dp.yaml` in the working directory for automatic detection:
+
+```bash
+# Explicit path
+./dp aws audit cost --policy ./dp.yaml
+
+# Auto-detected (dp.yaml exists in current directory)
+./dp aws audit cost
+
+# Works the same for security and data protection
+./dp aws audit security --policy ./dp.yaml
+./dp aws audit dataprotection --policy ./dp.yaml
+```
+
+### Integration status
+
+| Engine | `--policy` flag | ApplyPolicy called | Domain |
+|--------|-----------------|-------------------|--------|
+| `dp aws audit cost` | ✅ | ✅ | `"cost"` |
+| `dp aws audit security` | ✅ | ✅ | `"security"` |
+| `dp aws audit dataprotection` | ✅ | ✅ | `"dataprotection"` |
+
+The policy layer is entirely optional and non-invasive: if no policy file is
+provided, behavior is identical to previous releases.
+
+---
+
 ## Installation
 
 **Requirements:** Go 1.22+, AWS credentials configured (`~/.aws/credentials` or environment variables)
@@ -68,6 +134,7 @@ go build -o dp ./cmd/dp
 | `--report` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
 | `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### AWS security audit
 
@@ -98,6 +165,7 @@ go build -o dp ./cmd/dp
 | `--report` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
 | `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### AWS data protection audit
 
@@ -128,6 +196,7 @@ go build -o dp ./cmd/dp
 | `--report` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
 | `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### Kubernetes inspect
 
@@ -313,6 +382,7 @@ LoadProfile(s)
   → CollectAll (EC2 + CloudWatch, EBS, NAT, RDS, ELB, Savings Plan, Cost Explorer)
   → EvaluateAll (rule engine, per region)
   → mergeFindings (group by ResourceID+Region: highest severity, summed savings)
+  → ApplyPolicy (drop / override severity per domain and rule — no-op if no policy file)
   → sortFindings (CRITICAL → HIGH → MEDIUM → LOW → INFO, ties by savings desc)
   → AuditReport
 ```
@@ -380,6 +450,8 @@ LoadProfile(s)
 - [x] `dp aws audit security` command with table, JSON, summary, and --output flag
 - [x] AWS data protection audit: EBS encryption, RDS storage encryption, S3 default encryption
 - [x] `dp aws audit dataprotection` command with table, JSON, summary, and --output flag
+- [x] `--policy` CLI flag on all three audit commands with auto-detection of `./dp.yaml`
+- [x] Policy integration for cost, security, and data protection engines
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
 - [ ] Parallel region/profile collection (errgroup)
