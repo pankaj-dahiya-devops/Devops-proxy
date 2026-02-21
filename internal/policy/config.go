@@ -7,7 +7,8 @@ type PolicyConfig struct {
 }
 
 type DomainConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled     bool   `yaml:"enabled"`
+	MinSeverity string `yaml:"min_severity,omitempty"`
 }
 
 type RuleConfig struct {
