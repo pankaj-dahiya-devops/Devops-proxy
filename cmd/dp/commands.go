@@ -120,12 +120,17 @@ func newCostCmd() *cobra.Command {
 
 			if summary {
 				printSummary(os.Stdout, report)
-				return nil
+			} else if reportFmt == "json" {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printTable(report)
 			}
-			if reportFmt == "json" {
-				return printJSON(report)
+
+			if policy.ShouldFail("cost", report.Findings, policyCfg) {
+				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
-			printTable(report)
 			return nil
 		},
 	}
@@ -193,12 +198,17 @@ func newSecurityCmd() *cobra.Command {
 
 			if summary {
 				printSummary(os.Stdout, report)
-				return nil
+			} else if reportFmt == "json" {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printSecurityTable(report)
 			}
-			if reportFmt == "json" {
-				return printJSON(report)
+
+			if policy.ShouldFail("security", report.Findings, policyCfg) {
+				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
-			printSecurityTable(report)
 			return nil
 		},
 	}
@@ -266,12 +276,17 @@ func newDataProtectionCmd() *cobra.Command {
 
 			if summary {
 				printSummary(os.Stdout, report)
-				return nil
+			} else if reportFmt == "json" {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printDataProtectionTable(report)
 			}
-			if reportFmt == "json" {
-				return printJSON(report)
+
+			if policy.ShouldFail("dataprotection", report.Findings, policyCfg) {
+				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
-			printDataProtectionTable(report)
 			return nil
 		},
 	}
