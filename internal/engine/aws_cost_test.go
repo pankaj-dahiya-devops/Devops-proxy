@@ -230,6 +230,75 @@ func TestMergeFindings_NilMetadataHandled(t *testing.T) {
 	}
 }
 
+// ── sortFindings ─────────────────────────────────────────────────────────────
+
+func TestSortFindings_DeterministicAcrossInputOrder(t *testing.T) {
+	// Parallel region collectors append findings in non-deterministic order.
+	// sortFindings must produce the same canonical sequence regardless of the
+	// order in which findings were appended to the shared slice.
+	base := []models.Finding{
+		newFinding("i-low",      "us-east-1", "R1", models.SeverityLow,      5.0),
+		newFinding("i-critical", "us-east-1", "R2", models.SeverityCritical, 20.0),
+		newFinding("i-high-a",   "us-east-1", "R3", models.SeverityHigh,     30.0),
+		newFinding("i-medium",   "us-east-1", "R4", models.SeverityMedium,   10.0),
+		newFinding("i-high-b",   "us-east-1", "R5", models.SeverityHigh,     50.0),
+	}
+	// Expected: CRITICAL first, then HIGH by savings desc, then MEDIUM, then LOW.
+	wantOrder := []string{"i-critical", "i-high-b", "i-high-a", "i-medium", "i-low"}
+
+	permutations := [][]models.Finding{
+		{base[0], base[1], base[2], base[3], base[4]},
+		{base[4], base[3], base[2], base[1], base[0]},
+		{base[2], base[0], base[4], base[1], base[3]},
+	}
+
+	for pi, perm := range permutations {
+		cp := make([]models.Finding, len(perm))
+		copy(cp, perm)
+		sortFindings(cp)
+		for i, wantID := range wantOrder {
+			if cp[i].ResourceID != wantID {
+				t.Errorf("permutation %d: position %d got %q; want %q",
+					pi, i, cp[i].ResourceID, wantID)
+			}
+		}
+	}
+}
+
+func TestSortFindings_DeterministicAcrossProfiles(t *testing.T) {
+	// Parallel profile goroutines append findings in non-deterministic order.
+	// sortFindings must produce the same canonical sequence regardless of
+	// which profile's findings were appended first.
+	profileA := []models.Finding{
+		newFinding("i-critical-a", "us-east-1", "EC2_LOW_CPU", models.SeverityCritical, 100.0),
+		newFinding("vol-medium-a", "us-east-1", "EBS_UNATTACHED", models.SeverityMedium, 20.0),
+	}
+	profileB := []models.Finding{
+		newFinding("i-high-b", "eu-west-1", "EC2_NO_SP", models.SeverityHigh, 60.0),
+		newFinding("vol-low-b", "eu-west-1", "EBS_GP2_LEGACY", models.SeverityLow, 5.0),
+	}
+
+	// Expected canonical order: CRITICAL → HIGH → MEDIUM → LOW
+	wantOrder := []string{"i-critical-a", "i-high-b", "vol-medium-a", "vol-low-b"}
+
+	// Two orderings that simulate different goroutine append races
+	orderings := [][]models.Finding{
+		append(append([]models.Finding{}, profileA...), profileB...),
+		append(append([]models.Finding{}, profileB...), profileA...),
+	}
+
+	for oi, ordering := range orderings {
+		cp := make([]models.Finding, len(ordering))
+		copy(cp, ordering)
+		sortFindings(cp)
+		for i, wantID := range wantOrder {
+			if cp[i].ResourceID != wantID {
+				t.Errorf("ordering %d: position %d got %q; want %q", oi, i, cp[i].ResourceID, wantID)
+			}
+		}
+	}
+}
+
 // ── computeSummary ──────────────────────────────────────────────────────────
 
 func TestComputeSummary_Empty(t *testing.T) {

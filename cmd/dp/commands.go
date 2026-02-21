@@ -96,7 +96,7 @@ func newCostCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultEngine(provider, collector, registry, policyCfg)
+			eng := engine.NewAWSCostEngine(provider, collector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeCost,
@@ -175,7 +175,7 @@ func newSecurityCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultSecurityEngine(provider, collector, registry, policyCfg)
+			eng := engine.NewAWSSecurityEngine(provider, collector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeSecurity,
@@ -253,7 +253,7 @@ func newDataProtectionCmd() *cobra.Command {
 				registry.Register(r)
 			}
 
-			eng := engine.NewDefaultDataProtectionEngine(provider, costCollector, secCollector, registry, policyCfg)
+			eng := engine.NewAWSDataProtectionEngine(provider, costCollector, secCollector, registry, policyCfg)
 
 			opts := engine.AuditOptions{
 				AuditType:    engine.AuditTypeDataProtection,
