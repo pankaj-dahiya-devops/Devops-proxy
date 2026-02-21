@@ -39,13 +39,22 @@ version: 1
 
 domains:
   cost:
-    enabled: true   # set to false to suppress ALL cost findings
+    enabled: true        # set to false to suppress ALL cost findings
+    min_severity: HIGH   # drop findings whose final severity is below HIGH
+  security:
+    enabled: true
+    min_severity: MEDIUM
 
 rules:
   EC2_LOW_CPU:
-    enabled: false  # silence this rule entirely
+    enabled: false       # silence this rule entirely
+    params:
+      cpu_threshold: 15.0  # raise threshold from default 10% to 15%
   SG_OPEN_SSH:
-    severity: CRITICAL  # escalate from HIGH to CRITICAL
+    severity: CRITICAL   # escalate from HIGH to CRITICAL
+  NAT_LOW_TRAFFIC:
+    params:
+      traffic_gb_threshold: 2.0  # raise threshold from default 1 GB to 2 GB
 ```
 
 ### Behaviour
@@ -54,9 +63,25 @@ rules:
 |----------|--------|
 | No policy file | Default behaviour — all findings returned at rule-defined severity |
 | `domains.cost.enabled: false` | All cost findings dropped |
+| `domains.cost.min_severity: HIGH` | Findings with final severity MEDIUM, LOW, or INFO are dropped |
 | `rules.EC2_LOW_CPU.enabled: false` | All `EC2_LOW_CPU` findings dropped |
 | `rules.SG_OPEN_SSH.severity: CRITICAL` | Finding severity replaced with `CRITICAL` |
+| `rules.EC2_LOW_CPU.params.cpu_threshold: 15.0` | CPU threshold raised to 15% (overrides default 10%) |
 | Rule not listed in policy | Pass through unchanged |
+
+**Severity override + min_severity interact correctly:** the severity override is applied first,
+then the min_severity filter evaluates the post-override severity. A MEDIUM finding overridden
+to CRITICAL will survive a `min_severity: HIGH` filter.
+
+**Severity ordering:** `CRITICAL > HIGH > MEDIUM > LOW > INFO`
+
+**Rules supporting threshold params:**
+
+| Rule ID | Param key | Default |
+|---------|-----------|---------|
+| `EC2_LOW_CPU` | `cpu_threshold` | `10.0` |
+| `RDS_LOW_CPU` | `cpu_threshold` | `10.0` |
+| `NAT_LOW_TRAFFIC` | `traffic_gb_threshold` | `1.0` |
 
 ### Using `--policy`
 
@@ -417,7 +442,7 @@ LoadProfile(s)
 
 ### Test coverage
 
-99 unit tests across rule engine, data-protection rules, security rules, k8s provider, engine core, and CLI:
+120 unit tests across rule engine, policy layer, data-protection rules, security rules, k8s provider, engine core, and CLI:
 - `EBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
 - `EBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
 - `EC2LowCPURule` — 13 subtests (CW sentinel, threshold boundary, state filtering, CE cost skip, savings proportional)
@@ -452,6 +477,8 @@ LoadProfile(s)
 - [x] `dp aws audit dataprotection` command with table, JSON, summary, and --output flag
 - [x] `--policy` CLI flag on all three audit commands with auto-detection of `./dp.yaml`
 - [x] Policy integration for cost, security, and data protection engines
+- [x] Threshold overrides via `rules.<ID>.params` in `dp.yaml` (EC2, RDS, NAT rules)
+- [x] Minimum severity enforcement per domain via `domains.<name>.min_severity`
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
 - [ ] Parallel region/profile collection (errgroup)
