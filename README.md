@@ -135,7 +135,32 @@ provided, behavior is identical to previous releases.
 
 ---
 
-## Installation
+## Installation (Binary)
+
+Pre-built binaries for Linux, macOS, and Windows are available on the
+[GitHub Releases page](https://github.com/pankaj-dahiya-devops/Devops-proxy/releases).
+
+Download the archive for your platform, extract it, and place the `dp` binary on your `PATH`:
+
+```bash
+# Example: Linux amd64
+curl -L https://github.com/pankaj-dahiya-devops/Devops-proxy/releases/latest/download/dp_<version>_Linux_amd64.tar.gz | tar xz
+chmod +x dp
+sudo mv dp /usr/local/bin/
+```
+
+```bash
+# Example: macOS arm64 (Apple Silicon)
+curl -L https://github.com/pankaj-dahiya-devops/Devops-proxy/releases/latest/download/dp_<version>_macOS_arm64.tar.gz | tar xz
+chmod +x dp
+sudo mv dp /usr/local/bin/
+```
+
+Windows users can download the `.zip` archive from the Releases page and extract `dp.exe`.
+
+---
+
+## Installation (From Source)
 
 **Requirements:** Go 1.22+, AWS credentials configured (`~/.aws/credentials` or environment variables)
 
