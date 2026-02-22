@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.AddCommand(newAWSCmd())
 	root.AddCommand(newKubernetesCmd())
+	root.AddCommand(newPolicyCmd())
 	return root
 }
 
@@ -404,6 +405,64 @@ func printDataProtectionTable(report *models.AuditReport) {
 			string(f.ResourceType),
 		)
 	}
+}
+
+// ── policy commands ───────────────────────────────────────────────────────────
+
+func newPolicyCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "policy",
+		Short: "Policy management commands",
+	}
+	cmd.AddCommand(newPolicyValidateCmd())
+	return cmd
+}
+
+func newPolicyValidateCmd() *cobra.Command {
+	var policyPath string
+
+	cmd := &cobra.Command{
+		Use:          "validate",
+		Short:        "Validate a dp.yaml policy file without running an audit",
+		SilenceUsage: true, // don't print usage on validation errors
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadPolicyFile(policyPath)
+			if err != nil {
+				return fmt.Errorf("load policy: %w", err)
+			}
+			if cfg == nil {
+				return fmt.Errorf("no policy file found at %q", policyPath)
+			}
+
+			// Collect all known rule IDs from every registered pack.
+			var ruleIDs []string
+			for _, r := range costpack.New() {
+				ruleIDs = append(ruleIDs, r.ID())
+			}
+			for _, r := range secpack.New() {
+				ruleIDs = append(ruleIDs, r.ID())
+			}
+			for _, r := range dppack.New() {
+				ruleIDs = append(ruleIDs, r.ID())
+			}
+
+			errs := policy.Validate(cfg, ruleIDs)
+			if len(errs) > 0 {
+				for _, e := range errs {
+					fmt.Println(e)
+				}
+				return fmt.Errorf("policy validation failed: %d error(s)", len(errs))
+			}
+
+			fmt.Println("Policy file is valid.")
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file to validate")
+	_ = cmd.MarkFlagRequired("policy")
+
+	return cmd
 }
 
 // ── kubernetes commands ───────────────────────────────────────────────────────
