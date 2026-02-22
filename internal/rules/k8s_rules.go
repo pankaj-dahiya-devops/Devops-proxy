@@ -129,3 +129,152 @@ func (r K8SNamespaceWithoutLimitsRule) Evaluate(ctx RuleContext) []models.Findin
 	}
 	return findings
 }
+
+// ── K8S_PRIVILEGED_CONTAINER ─────────────────────────────────────────────────
+
+// K8SPrivilegedContainerRule fires for each container running with
+// securityContext.privileged == true. Privileged containers have full host
+// access and significantly expand the attack surface.
+type K8SPrivilegedContainerRule struct{}
+
+func (r K8SPrivilegedContainerRule) ID() string   { return "K8S_PRIVILEGED_CONTAINER" }
+func (r K8SPrivilegedContainerRule) Name() string { return "Kubernetes Privileged Container Detected" }
+
+func (r K8SPrivilegedContainerRule) Evaluate(ctx RuleContext) []models.Finding {
+	if ctx.ClusterData == nil {
+		return nil
+	}
+	var findings []models.Finding
+	for _, pod := range ctx.ClusterData.Pods {
+		for _, c := range pod.Containers {
+			if !c.Privileged {
+				continue
+			}
+			findings = append(findings, models.Finding{
+				ID:           fmt.Sprintf("%s:%s:%s/%s/%s", r.ID(), ctx.ClusterData.ContextName, pod.Namespace, pod.Name, c.Name),
+				RuleID:       r.ID(),
+				ResourceID:   pod.Name,
+				ResourceType: models.ResourceK8sPod,
+				Region:       ctx.ClusterData.ContextName,
+				AccountID:    ctx.AccountID,
+				Profile:      ctx.Profile,
+				Severity:     models.SeverityCritical,
+				Explanation: fmt.Sprintf(
+					"Container %q in pod %q (namespace %q) is running with a privileged security context.",
+					c.Name, pod.Name, pod.Namespace,
+				),
+				Recommendation: "Remove the privileged flag from the container security context. " +
+					"Use Pod Security Admission to block privileged containers cluster-wide.",
+				DetectedAt: time.Now().UTC(),
+				Metadata: map[string]any{
+					"namespace":      pod.Namespace,
+					"container_name": c.Name,
+				},
+			})
+		}
+	}
+	return findings
+}
+
+// ── K8S_SERVICE_PUBLIC_LOADBALANCER ──────────────────────────────────────────
+
+// awsInternalLBAnnotation is the annotation that marks a LoadBalancer Service
+// as internal (reachable only within the VPC).
+const awsInternalLBAnnotation = "service.beta.kubernetes.io/aws-load-balancer-internal"
+
+// K8SServicePublicLoadBalancerRule fires for each Service of type LoadBalancer
+// that does NOT carry the AWS internal load-balancer annotation.
+type K8SServicePublicLoadBalancerRule struct{}
+
+func (r K8SServicePublicLoadBalancerRule) ID() string {
+	return "K8S_SERVICE_PUBLIC_LOADBALANCER"
+}
+func (r K8SServicePublicLoadBalancerRule) Name() string {
+	return "Kubernetes Service Exposes Public Load Balancer"
+}
+
+func (r K8SServicePublicLoadBalancerRule) Evaluate(ctx RuleContext) []models.Finding {
+	if ctx.ClusterData == nil {
+		return nil
+	}
+	var findings []models.Finding
+	for _, svc := range ctx.ClusterData.Services {
+		if svc.Type != "LoadBalancer" {
+			continue
+		}
+		if svc.Annotations[awsInternalLBAnnotation] == "true" {
+			continue
+		}
+		findings = append(findings, models.Finding{
+			ID:           fmt.Sprintf("%s:%s:%s/%s", r.ID(), ctx.ClusterData.ContextName, svc.Namespace, svc.Name),
+			RuleID:       r.ID(),
+			ResourceID:   svc.Name,
+			ResourceType: models.ResourceK8sService,
+			Region:       ctx.ClusterData.ContextName,
+			AccountID:    ctx.AccountID,
+			Profile:      ctx.Profile,
+			Severity:     models.SeverityHigh,
+			Explanation: fmt.Sprintf(
+				"Service %q (namespace %q) uses type LoadBalancer without the internal annotation, exposing it publicly.",
+				svc.Name, svc.Namespace,
+			),
+			Recommendation: fmt.Sprintf(
+				"Add annotation %q: \"true\" to restrict the load balancer to internal VPC traffic, "+
+					"or replace with an Ingress resource backed by an internal controller.",
+				awsInternalLBAnnotation,
+			),
+			DetectedAt: time.Now().UTC(),
+		})
+	}
+	return findings
+}
+
+// ── K8S_POD_NO_RESOURCE_REQUESTS ─────────────────────────────────────────────
+
+// K8SPodNoResourceRequestsRule fires for each container that is missing a CPU
+// or memory resource request. Without requests the scheduler cannot make
+// accurate placement decisions and quality-of-service guarantees are lost.
+type K8SPodNoResourceRequestsRule struct{}
+
+func (r K8SPodNoResourceRequestsRule) ID() string { return "K8S_POD_NO_RESOURCE_REQUESTS" }
+func (r K8SPodNoResourceRequestsRule) Name() string {
+	return "Kubernetes Pod Container Missing Resource Requests"
+}
+
+func (r K8SPodNoResourceRequestsRule) Evaluate(ctx RuleContext) []models.Finding {
+	if ctx.ClusterData == nil {
+		return nil
+	}
+	var findings []models.Finding
+	for _, pod := range ctx.ClusterData.Pods {
+		for _, c := range pod.Containers {
+			if c.HasCPURequest && c.HasMemoryRequest {
+				continue
+			}
+			findings = append(findings, models.Finding{
+				ID:           fmt.Sprintf("%s:%s:%s/%s/%s", r.ID(), ctx.ClusterData.ContextName, pod.Namespace, pod.Name, c.Name),
+				RuleID:       r.ID(),
+				ResourceID:   pod.Name,
+				ResourceType: models.ResourceK8sPod,
+				Region:       ctx.ClusterData.ContextName,
+				AccountID:    ctx.AccountID,
+				Profile:      ctx.Profile,
+				Severity:     models.SeverityMedium,
+				Explanation: fmt.Sprintf(
+					"Container %q in pod %q (namespace %q) is missing CPU or memory resource requests.",
+					c.Name, pod.Name, pod.Namespace,
+				),
+				Recommendation: "Set explicit CPU and memory resource requests on all containers " +
+					"to enable accurate scheduler placement and Guaranteed/Burstable QoS.",
+				DetectedAt: time.Now().UTC(),
+				Metadata: map[string]any{
+					"namespace":          pod.Namespace,
+					"container_name":     c.Name,
+					"has_cpu_request":    c.HasCPURequest,
+					"has_memory_request": c.HasMemoryRequest,
+				},
+			})
+		}
+	}
+	return findings
+}

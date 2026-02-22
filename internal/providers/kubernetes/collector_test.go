@@ -10,6 +10,51 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
+// boolPtr is a helper that returns a pointer to the given bool value.
+func boolPtr(b bool) *bool { return &b }
+
+// makePod is a test helper that builds a corev1.Pod with the given name,
+// namespace, and containers.
+func makePod(namespace, name string, containers []corev1.Container) *corev1.Pod {
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec:       corev1.PodSpec{Containers: containers},
+	}
+}
+
+// makeContainer is a test helper that builds a corev1.Container.
+func makeContainer(name string, privileged bool, cpuReq, memReq string) corev1.Container {
+	sc := &corev1.SecurityContext{
+		Privileged: boolPtr(privileged),
+	}
+	requests := corev1.ResourceList{}
+	if cpuReq != "" {
+		requests[corev1.ResourceCPU] = resource.MustParse(cpuReq)
+	}
+	if memReq != "" {
+		requests[corev1.ResourceMemory] = resource.MustParse(memReq)
+	}
+	return corev1.Container{
+		Name:            name,
+		SecurityContext: sc,
+		Resources: corev1.ResourceRequirements{
+			Requests: requests,
+		},
+	}
+}
+
+// makeService is a test helper that builds a corev1.Service.
+func makeService(namespace, name string, svcType corev1.ServiceType, annotations map[string]string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{Type: svcType},
+	}
+}
+
 // makeNode is a test helper that builds a corev1.Node with the given name,
 // CPU capacity, memory capacity, allocatable CPU, and allocatable memory.
 func makeNode(name, cpuCap, memCap, cpuAlloc, memAlloc string) *corev1.Node {
@@ -213,5 +258,166 @@ func TestCollectClusterData_EmptyCluster(t *testing.T) {
 	}
 	if data.ClusterInfo.ContextName != "empty" {
 		t.Errorf("ClusterInfo.ContextName = %q; want empty", data.ClusterInfo.ContextName)
+	}
+}
+
+// TestCollectClusterData_PrivilegedContainer verifies that a pod with a
+// privileged container has ContainerInfo.Privileged == true.
+func TestCollectClusterData_PrivilegedContainer(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		makePod("default", "priv-pod", []corev1.Container{
+			makeContainer("priv-container", true, "100m", "128Mi"),
+		}),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Pods) != 1 {
+		t.Fatalf("Pods count = %d; want 1", len(data.Pods))
+	}
+	pod := data.Pods[0]
+	if pod.Name != "priv-pod" {
+		t.Errorf("pod Name = %q; want priv-pod", pod.Name)
+	}
+	if pod.Namespace != "default" {
+		t.Errorf("pod Namespace = %q; want default", pod.Namespace)
+	}
+	if len(pod.Containers) != 1 {
+		t.Fatalf("Containers count = %d; want 1", len(pod.Containers))
+	}
+	if !pod.Containers[0].Privileged {
+		t.Error("Privileged = false; want true for privileged container")
+	}
+}
+
+// TestCollectClusterData_NonPrivilegedContainer verifies that a pod without
+// privileged containers has ContainerInfo.Privileged == false.
+func TestCollectClusterData_NonPrivilegedContainer(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		makePod("default", "normal-pod", []corev1.Container{
+			makeContainer("app", false, "100m", "128Mi"),
+		}),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Pods) != 1 {
+		t.Fatalf("Pods count = %d; want 1", len(data.Pods))
+	}
+	if data.Pods[0].Containers[0].Privileged {
+		t.Error("Privileged = true; want false for non-privileged container")
+	}
+}
+
+// TestCollectClusterData_ContainerResourceRequests verifies that HasCPURequest
+// and HasMemoryRequest are correctly detected.
+func TestCollectClusterData_ContainerResourceRequests(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		// container-with: CPU + memory set; container-without: neither set
+		makePod("default", "mixed-pod", []corev1.Container{
+			makeContainer("with-requests", false, "250m", "256Mi"),
+			makeContainer("no-requests", false, "", ""),
+		}),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Pods) != 1 {
+		t.Fatalf("Pods count = %d; want 1", len(data.Pods))
+	}
+	containers := data.Pods[0].Containers
+	if len(containers) != 2 {
+		t.Fatalf("Containers count = %d; want 2", len(containers))
+	}
+
+	withReq := containers[0]
+	if !withReq.HasCPURequest {
+		t.Error("HasCPURequest = false; want true for container with 250m CPU request")
+	}
+	if !withReq.HasMemoryRequest {
+		t.Error("HasMemoryRequest = false; want true for container with 256Mi memory request")
+	}
+
+	noReq := containers[1]
+	if noReq.HasCPURequest {
+		t.Error("HasCPURequest = true; want false for container with no CPU request")
+	}
+	if noReq.HasMemoryRequest {
+		t.Error("HasMemoryRequest = true; want false for container with no memory request")
+	}
+}
+
+// TestCollectClusterData_ServiceLoadBalancer verifies that a LoadBalancer
+// Service is collected with the correct type.
+func TestCollectClusterData_ServiceLoadBalancer(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		makeService("production", "web-lb", corev1.ServiceTypeLoadBalancer, nil),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Services) != 1 {
+		t.Fatalf("Services count = %d; want 1", len(data.Services))
+	}
+	svc := data.Services[0]
+	if svc.Name != "web-lb" {
+		t.Errorf("Service Name = %q; want web-lb", svc.Name)
+	}
+	if svc.Namespace != "production" {
+		t.Errorf("Service Namespace = %q; want production", svc.Namespace)
+	}
+	if svc.Type != "LoadBalancer" {
+		t.Errorf("Service Type = %q; want LoadBalancer", svc.Type)
+	}
+}
+
+// TestCollectClusterData_ServiceInternalAnnotation verifies that the internal
+// load-balancer annotation is copied into ServiceInfo.Annotations.
+func TestCollectClusterData_ServiceInternalAnnotation(t *testing.T) {
+	annotations := map[string]string{
+		"service.beta.kubernetes.io/aws-load-balancer-internal": "true",
+	}
+	fakeClient := fake.NewSimpleClientset(
+		makeService("default", "internal-lb", corev1.ServiceTypeLoadBalancer, annotations),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Services) != 1 {
+		t.Fatalf("Services count = %d; want 1", len(data.Services))
+	}
+	svc := data.Services[0]
+	got := svc.Annotations["service.beta.kubernetes.io/aws-load-balancer-internal"]
+	if got != "true" {
+		t.Errorf("internal annotation = %q; want true", got)
+	}
+}
+
+// TestCollectClusterData_ServiceClusterIP verifies that a ClusterIP Service
+// is collected with the correct type.
+func TestCollectClusterData_ServiceClusterIP(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		makeService("default", "internal-svc", corev1.ServiceTypeClusterIP, nil),
+	)
+
+	data, err := CollectClusterData(context.Background(), fakeClient, ClusterInfo{})
+	if err != nil {
+		t.Fatalf("CollectClusterData error: %v", err)
+	}
+	if len(data.Services) != 1 {
+		t.Fatalf("Services count = %d; want 1", len(data.Services))
+	}
+	if data.Services[0].Type != "ClusterIP" {
+		t.Errorf("Service Type = %q; want ClusterIP", data.Services[0].Type)
 	}
 }
