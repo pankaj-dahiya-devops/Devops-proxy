@@ -41,10 +41,54 @@ type NamespaceInfo struct {
 	HasLimitRange bool
 }
 
+// ContainerInfo holds per-container security and resource request data.
+type ContainerInfo struct {
+	// Name is the container name within the pod spec.
+	Name string
+
+	// Privileged is true when securityContext.privileged == true.
+	Privileged bool
+
+	// HasCPURequest is true when the container declares a non-zero CPU resource request.
+	HasCPURequest bool
+
+	// HasMemoryRequest is true when the container declares a non-zero memory resource request.
+	HasMemoryRequest bool
+}
+
+// PodInfo holds basic pod metadata and its container list.
+type PodInfo struct {
+	// Name is the pod name.
+	Name string
+
+	// Namespace is the Kubernetes namespace that owns this pod.
+	Namespace string
+
+	// Containers holds per-container security and resource data.
+	Containers []ContainerInfo
+}
+
+// ServiceInfo holds basic Service metadata used for network exposure checks.
+type ServiceInfo struct {
+	// Name is the Service name.
+	Name string
+
+	// Namespace is the Kubernetes namespace that owns this Service.
+	Namespace string
+
+	// Type is the Service type string (e.g. "ClusterIP", "NodePort", "LoadBalancer").
+	Type string
+
+	// Annotations is a copy of the Service's annotation map.
+	Annotations map[string]string
+}
+
 // ClusterData is the inventory collected from a single Kubernetes cluster.
 // It is the k8s equivalent of models.RegionData and is the input to k8s rules.
 type ClusterData struct {
 	ClusterInfo ClusterInfo
 	Nodes       []NodeInfo
 	Namespaces  []NamespaceInfo
+	Pods        []PodInfo
+	Services    []ServiceInfo
 }

@@ -101,5 +101,32 @@ func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
 			HasLimitRange: ns.HasLimitRange,
 		})
 	}
+	for _, pod := range data.Pods {
+		pd := models.KubernetesPodData{
+			Name:      pod.Name,
+			Namespace: pod.Namespace,
+		}
+		for _, c := range pod.Containers {
+			pd.Containers = append(pd.Containers, models.KubernetesContainerData{
+				Name:             c.Name,
+				Privileged:       c.Privileged,
+				HasCPURequest:    c.HasCPURequest,
+				HasMemoryRequest: c.HasMemoryRequest,
+			})
+		}
+		k.Pods = append(k.Pods, pd)
+	}
+	for _, svc := range data.Services {
+		annotations := make(map[string]string, len(svc.Annotations))
+		for key, val := range svc.Annotations {
+			annotations[key] = val
+		}
+		k.Services = append(k.Services, models.KubernetesServiceData{
+			Name:        svc.Name,
+			Namespace:   svc.Namespace,
+			Type:        svc.Type,
+			Annotations: annotations,
+		})
+	}
 	return k
 }

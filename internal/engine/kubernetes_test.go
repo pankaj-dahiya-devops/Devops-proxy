@@ -266,3 +266,179 @@ func TestKubernetesEngine_NamespaceWithLimitRange(t *testing.T) {
 		}
 	}
 }
+
+// k8sPod builds a corev1.Pod for use with the fake clientset.
+// cpuReq and memReq may be "" to omit resource requests.
+func k8sPod(namespace, name string, privileged bool, cpuReq, memReq string) *corev1.Pod {
+	privPtr := &privileged
+	requests := corev1.ResourceList{}
+	if cpuReq != "" {
+		requests[corev1.ResourceCPU] = resource.MustParse(cpuReq)
+	}
+	if memReq != "" {
+		requests[corev1.ResourceMemory] = resource.MustParse(memReq)
+	}
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.PodSpec{
+			Containers: []corev1.Container{
+				{
+					Name: "app",
+					SecurityContext: &corev1.SecurityContext{
+						Privileged: privPtr,
+					},
+					Resources: corev1.ResourceRequirements{
+						Requests: requests,
+					},
+				},
+			},
+		},
+	}
+}
+
+// k8sService builds a corev1.Service for use with the fake clientset.
+func k8sService(namespace, name string, svcType corev1.ServiceType, annotations map[string]string) *corev1.Service {
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Annotations: annotations},
+		Spec:       corev1.ServiceSpec{Type: svcType},
+	}
+}
+
+// TestKubernetesEngine_PrivilegedContainer verifies that a privileged container
+// triggers K8S_PRIVILEGED_CONTAINER (CRITICAL).
+func TestKubernetesEngine_PrivilegedContainer(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		// privileged pod: true, with resource requests set (avoids no-request rule)
+		k8sPod("default", "priv-pod", true, "100m", "128Mi"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "priv-ctx"},
+	}
+
+	eng := newK8sEngine(provider, nil)
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	var privCount int
+	for _, f := range report.Findings {
+		if f.RuleID == "K8S_PRIVILEGED_CONTAINER" {
+			privCount++
+			if f.Severity != models.SeverityCritical {
+				t.Errorf("K8S_PRIVILEGED_CONTAINER severity = %q; want CRITICAL", f.Severity)
+			}
+		}
+	}
+	if privCount != 1 {
+		t.Errorf("expected 1 K8S_PRIVILEGED_CONTAINER finding; got %d", privCount)
+	}
+	if report.Summary.CriticalFindings < 1 {
+		t.Error("expected at least 1 CRITICAL finding in summary")
+	}
+}
+
+// TestKubernetesEngine_PublicLoadBalancer verifies that a public LoadBalancer
+// Service triggers K8S_SERVICE_PUBLIC_LOADBALANCER (HIGH).
+func TestKubernetesEngine_PublicLoadBalancer(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "lb-ctx"},
+	}
+
+	eng := newK8sEngine(provider, nil)
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	var lbCount int
+	for _, f := range report.Findings {
+		if f.RuleID == "K8S_SERVICE_PUBLIC_LOADBALANCER" {
+			lbCount++
+		}
+	}
+	if lbCount != 1 {
+		t.Errorf("expected 1 K8S_SERVICE_PUBLIC_LOADBALANCER finding; got %d", lbCount)
+	}
+}
+
+// TestKubernetesEngine_InternalLoadBalancer verifies that a LoadBalancer Service
+// annotated as internal does NOT trigger K8S_SERVICE_PUBLIC_LOADBALANCER.
+func TestKubernetesEngine_InternalLoadBalancer(t *testing.T) {
+	annotations := map[string]string{
+		"service.beta.kubernetes.io/aws-load-balancer-internal": "true",
+	}
+	fakeClient := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("default", "internal-lb", corev1.ServiceTypeLoadBalancer, annotations),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "internal-lb-ctx"},
+	}
+
+	eng := newK8sEngine(provider, nil)
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	for _, f := range report.Findings {
+		if f.RuleID == "K8S_SERVICE_PUBLIC_LOADBALANCER" {
+			t.Errorf("K8S_SERVICE_PUBLIC_LOADBALANCER fired for internal LoadBalancer")
+		}
+	}
+}
+
+// TestKubernetesEngine_MixedFindings verifies that all three new rules fire
+// together in a cluster with privileged pods, public LBs, and pods missing requests.
+func TestKubernetesEngine_MixedFindings(t *testing.T) {
+	fakeClient := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		// privileged container with resource requests (avoids no-request rule)
+		k8sPod("kube-system", "priv-pod", true, "100m", "128Mi"),
+		// pod without any resource requests
+		k8sPod("default", "no-req-pod", false, "", ""),
+		// public LoadBalancer
+		k8sService("production", "web", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "mixed-ctx"},
+	}
+
+	eng := newK8sEngine(provider, nil)
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ruleIDs := make(map[string]bool)
+	for _, f := range report.Findings {
+		ruleIDs[f.RuleID] = true
+	}
+	for _, want := range []string{
+		"K8S_PRIVILEGED_CONTAINER",
+		"K8S_SERVICE_PUBLIC_LOADBALANCER",
+		"K8S_POD_NO_RESOURCE_REQUESTS",
+	} {
+		if !ruleIDs[want] {
+			t.Errorf("expected finding for rule %q; not found in report", want)
+		}
+	}
+	// CRITICAL finding should be first (sorted highest severity first)
+	if len(report.Findings) > 0 && report.Findings[0].Severity != models.SeverityCritical {
+		t.Errorf("findings[0].Severity = %q; want CRITICAL (privileged container)", report.Findings[0].Severity)
+	}
+}
