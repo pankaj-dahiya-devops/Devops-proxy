@@ -15,6 +15,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
+	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/version"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
@@ -33,7 +34,18 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newAWSCmd())
 	root.AddCommand(newKubernetesCmd())
 	root.AddCommand(newPolicyCmd())
+	root.AddCommand(newVersionCmd())
 	return root
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print dp version, commit, and build date",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Fprint(cmd.OutOrStdout(), version.Info())
+		},
+	}
 }
 
 func newAWSCmd() *cobra.Command {
