@@ -27,6 +27,11 @@ const (
 	ResourceSecurityGroup ResourceType = "SECURITY_GROUP"
 	ResourceIAMUser       ResourceType = "IAM_USER"
 	ResourceRootAccount   ResourceType = "ROOT_ACCOUNT"
+
+	// Kubernetes resource types
+	ResourceK8sNode      ResourceType = "K8S_NODE"
+	ResourceK8sNamespace ResourceType = "K8S_NAMESPACE"
+	ResourceK8sCluster   ResourceType = "K8S_CLUSTER"
 )
 
 // Finding is a single detected waste or inefficiency issue.

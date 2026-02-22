@@ -105,7 +105,7 @@ func TestValidate_UnknownDomain(t *testing.T) {
 }
 
 func TestValidate_AllValidDomainsAccepted(t *testing.T) {
-	for _, domain := range []string{"cost", "security", "dataprotection"} {
+	for _, domain := range []string{"cost", "security", "dataprotection", "kubernetes"} {
 		cfg := &policy.PolicyConfig{
 			Version: 1,
 			Domains: map[string]policy.DomainConfig{

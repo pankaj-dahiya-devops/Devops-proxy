@@ -19,9 +19,10 @@ import (
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	costpack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
-	dppack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/dataprotection"
-	secpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/security"
+	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
+	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/dataprotection"
+	k8spack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
+	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/security"
 )
 
 func newRootCmd() *cobra.Command {
@@ -445,6 +446,9 @@ func newPolicyValidateCmd() *cobra.Command {
 			for _, r := range dppack.New() {
 				ruleIDs = append(ruleIDs, r.ID())
 			}
+			for _, r := range k8spack.New() {
+				ruleIDs = append(ruleIDs, r.ID())
+			}
 
 			errs := policy.Validate(cfg, ruleIDs)
 			if len(errs) > 0 {
@@ -473,6 +477,7 @@ func newKubernetesCmd() *cobra.Command {
 		Short: "Kubernetes provider commands",
 	}
 	cmd.AddCommand(newInspectCmd())
+	cmd.AddCommand(newKubernetesAuditCmd())
 	return cmd
 }
 
@@ -516,6 +521,104 @@ func printClusterInspect(w io.Writer, data *kube.ClusterData) {
 	fmt.Fprintf(w, "API Server:  %s\n", data.ClusterInfo.Server)
 	fmt.Fprintf(w, "Nodes:       %d\n", len(data.Nodes))
 	fmt.Fprintf(w, "Namespaces:  %d\n", len(data.Namespaces))
+}
+
+// newKubernetesAuditCmd implements dp kubernetes audit.
+func newKubernetesAuditCmd() *cobra.Command {
+	var (
+		contextName string
+		reportFmt   string
+		summary     bool
+		output      string
+		policyPath  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "audit",
+		Short: "Audit a Kubernetes cluster: single-node, overallocated nodes, namespaces without LimitRanges",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			policyCfg, err := loadPolicyFile(policyPath)
+			if err != nil {
+				return fmt.Errorf("load policy: %w", err)
+			}
+
+			provider := kube.NewDefaultKubeClientProvider()
+
+			registry := rules.NewDefaultRuleRegistry()
+			for _, r := range k8spack.New() {
+				registry.Register(r)
+			}
+
+			eng := engine.NewKubernetesEngine(provider, registry, policyCfg)
+
+			opts := engine.KubernetesAuditOptions{
+				ContextName:  contextName,
+				ReportFormat: engine.ReportFormat(reportFmt),
+			}
+
+			report, err := eng.RunAudit(cmd.Context(), opts)
+			if err != nil {
+				return fmt.Errorf("kubernetes audit failed: %w", err)
+			}
+
+			if output != "" {
+				if err := writeReportToFile(output, report); err != nil {
+					return err
+				}
+			}
+
+			if summary {
+				printSummary(os.Stdout, report)
+			} else if reportFmt == "json" {
+				if err := printJSON(report); err != nil {
+					return err
+				}
+			} else {
+				printKubernetesTable(report)
+			}
+
+			if policy.ShouldFail("kubernetes", report.Findings, policyCfg) {
+				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&contextName, "context", "", "Kubeconfig context to use (default: current context)")
+	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
+	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+
+	return cmd
+}
+
+// printKubernetesTable renders the Kubernetes audit findings table.
+// K8s findings have no estimated savings; the last column shows the resource type.
+func printKubernetesTable(report *models.AuditReport) {
+	s := report.Summary
+	fmt.Printf(
+		"Context: %-30s  Findings: %d\n",
+		report.Profile,
+		s.TotalFindings,
+	)
+
+	if len(report.Findings) == 0 {
+		fmt.Println("No findings.")
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("%-42s  %-30s  %-10s  %s\n", "RESOURCE ID", "CONTEXT", "SEVERITY", "TYPE")
+	fmt.Println(strings.Repeat("-", 95))
+	for _, f := range report.Findings {
+		fmt.Printf("%-42s  %-30s  %-10s  %s\n",
+			f.ResourceID,
+			f.Region,
+			string(f.Severity),
+			string(f.ResourceType),
+		)
+	}
 }
 
 // ── AWS output renderers ──────────────────────────────────────────────────────
