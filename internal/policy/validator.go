@@ -10,6 +10,7 @@ var validDomains = map[string]struct{}{
 	"cost":           {},
 	"security":       {},
 	"dataprotection": {},
+	"kubernetes":     {},
 }
 
 // validSeverities is the set of allowed severity strings (upper-case canonical form).

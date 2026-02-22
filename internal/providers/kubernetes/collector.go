@@ -42,17 +42,21 @@ func collectNodes(ctx context.Context, clientset k8sclient.Interface) ([]NodeInf
 	nodes := make([]NodeInfo, 0, len(nodeList.Items))
 	for _, n := range nodeList.Items {
 		nodes = append(nodes, NodeInfo{
-			Name:              n.Name,
-			CPUCapacity:       n.Status.Capacity.Cpu().String(),
-			MemoryCapacity:    n.Status.Capacity.Memory().String(),
-			AllocatableCPU:    n.Status.Allocatable.Cpu().String(),
-			AllocatableMemory: n.Status.Allocatable.Memory().String(),
+			Name:                 n.Name,
+			CPUCapacity:          n.Status.Capacity.Cpu().String(),
+			MemoryCapacity:       n.Status.Capacity.Memory().String(),
+			AllocatableCPU:       n.Status.Allocatable.Cpu().String(),
+			AllocatableMemory:    n.Status.Allocatable.Memory().String(),
+			CPUCapacityMillis:    n.Status.Capacity.Cpu().MilliValue(),
+			AllocatableCPUMillis: n.Status.Allocatable.Cpu().MilliValue(),
 		})
 	}
 	return nodes, nil
 }
 
 // collectNamespaces lists all namespaces and converts them to NamespaceInfo.
+// It also checks each namespace for the presence of at least one LimitRange,
+// which governs default resource limits for pods.
 func collectNamespaces(ctx context.Context, clientset k8sclient.Interface) ([]NamespaceInfo, error) {
 	nsList, err := clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{})
 	if err != nil {
@@ -61,7 +65,14 @@ func collectNamespaces(ctx context.Context, clientset k8sclient.Interface) ([]Na
 
 	namespaces := make([]NamespaceInfo, 0, len(nsList.Items))
 	for _, ns := range nsList.Items {
-		namespaces = append(namespaces, NamespaceInfo{Name: ns.Name})
+		lrList, err := clientset.CoreV1().LimitRanges(ns.Name).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("collect limitranges for namespace %q: %w", ns.Name, err)
+		}
+		namespaces = append(namespaces, NamespaceInfo{
+			Name:          ns.Name,
+			HasLimitRange: len(lrList.Items) > 0,
+		})
 	}
 	return namespaces, nil
 }

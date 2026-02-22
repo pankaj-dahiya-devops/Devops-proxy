@@ -25,6 +25,10 @@ type RuleContext struct {
 	// Policy holds the active PolicyConfig for threshold overrides. May be nil
 	// when no policy file is loaded; rules must treat nil as "use defaults".
 	Policy *policy.PolicyConfig
+
+	// ClusterData holds Kubernetes cluster inventory for K8s rule evaluation.
+	// Nil when running AWS audits; K8s rules must check for nil before use.
+	ClusterData *models.KubernetesClusterData
 }
 
 // Rule is a single deterministic waste-detection rule.

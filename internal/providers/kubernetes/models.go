@@ -23,11 +23,22 @@ type NodeInfo struct {
 	// scheduling (capacity minus system/kubelet reservations).
 	AllocatableCPU    string
 	AllocatableMemory string
+
+	// CPUCapacityMillis is CPUCapacity expressed in millicores for arithmetic
+	// comparisons without string parsing in rule code.
+	CPUCapacityMillis int64
+
+	// AllocatableCPUMillis is AllocatableCPU expressed in millicores.
+	AllocatableCPUMillis int64
 }
 
 // NamespaceInfo holds basic namespace metadata.
 type NamespaceInfo struct {
 	Name string
+
+	// HasLimitRange is true when at least one LimitRange object exists in
+	// this namespace, indicating default resource limits are configured.
+	HasLimitRange bool
 }
 
 // ClusterData is the inventory collected from a single Kubernetes cluster.
