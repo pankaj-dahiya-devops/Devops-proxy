@@ -287,6 +287,22 @@ go build -o dp ./cmd/dp
 |------|------|---------|-------------|
 | `--context` | string | `""` | Kubeconfig context to use (empty = current context) |
 
+### Version
+
+```bash
+dp version
+```
+
+Prints the binary version, git commit, and build date:
+
+```
+dp version v0.4.0
+commit: a1b2c3d
+built: 2026-02-22
+```
+
+When built locally with `go build`, the defaults `dev / none / unknown` are used.
+
 ---
 
 ## Example Output
