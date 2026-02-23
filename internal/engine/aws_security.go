@@ -151,6 +151,7 @@ func (e *AWSSecurityEngine) evaluateSecurity(
 		Policy: e.policy,
 	}
 	raw := e.registry.EvaluateAll(rctx)
+	stampDomain(raw, "security")
 	return mergeFindings(raw)
 }
 

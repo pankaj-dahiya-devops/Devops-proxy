@@ -193,6 +193,7 @@ func (e *AWSDataProtectionEngine) evaluateDataProtection(
 	}
 	raw = append(raw, e.registry.EvaluateAll(rctx)...)
 
+	stampDomain(raw, "dataprotection")
 	return mergeFindings(raw)
 }
 

@@ -183,7 +183,7 @@ func (e *AWSCostEngine) resolveRegions(
 }
 
 // evaluateAll applies every registered rule to each region's collected data
-// and returns the merged findings slice.
+// and returns the merged findings slice with Domain stamped.
 func (e *AWSCostEngine) evaluateAll(
 	regionData []models.RegionData,
 	costSummary *models.CostSummary,
@@ -200,7 +200,17 @@ func (e *AWSCostEngine) evaluateAll(
 		}
 		findings = append(findings, e.registry.EvaluateAll(rctx)...)
 	}
+	stampDomain(findings, "cost")
 	return findings
+}
+
+// stampDomain sets the Domain field on every finding in the slice.
+// It is called once per engine, immediately after rule evaluation,
+// before any merge or sort. This is the canonical location for domain tagging.
+func stampDomain(findings []models.Finding, domain string) {
+	for i := range findings {
+		findings[i].Domain = domain
+	}
 }
 
 // buildReport assembles the final AuditReport from collected data and findings.
@@ -244,7 +254,7 @@ type findingGroupKey struct {
 //   - Metadata["rules"]: []string of every RuleID that fired on this resource
 //
 // All other fields (ID, RuleID, ResourceType, Explanation, Recommendation,
-// DetectedAt, AccountID, Profile) are taken from the first finding in the group.
+// DetectedAt, AccountID, Profile, Domain) are taken from the first finding in the group.
 // Additional Metadata keys from later findings are merged in without overwriting
 // keys already set by earlier findings.
 // Insertion order of groups is preserved so sortFindings controls final order.

@@ -64,6 +64,7 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 
 	rctx := rules.RuleContext{ClusterData: k8sData}
 	raw := e.registry.EvaluateAll(rctx)
+	stampDomain(raw, "kubernetes")
 
 	merged := mergeFindings(raw)
 	filtered := policy.ApplyPolicy(merged, "kubernetes", e.policy)

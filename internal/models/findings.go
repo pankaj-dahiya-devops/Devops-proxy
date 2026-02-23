@@ -46,6 +46,7 @@ type Finding struct {
 	Region                  string         `json:"region"`
 	AccountID               string         `json:"account_id"`
 	Profile                 string         `json:"profile"`
+	Domain                  string         `json:"domain"`
 	Severity                Severity       `json:"severity"`
 	EstimatedMonthlySavings float64        `json:"estimated_monthly_savings_usd"`
 	Explanation             string         `json:"explanation"`
