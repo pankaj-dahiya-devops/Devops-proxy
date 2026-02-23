@@ -10,9 +10,10 @@ import (
 type AuditType string
 
 const (
-	AuditTypeCost            AuditType = "cost"
-	AuditTypeSecurity        AuditType = "security"
-	AuditTypeDataProtection  AuditType = "dataprotection"
+	AuditTypeCost           AuditType = "cost"
+	AuditTypeSecurity       AuditType = "security"
+	AuditTypeDataProtection AuditType = "dataprotection"
+	AuditTypeAll            AuditType = "all"
 )
 
 // ReportFormat controls the CLI output format.

@@ -59,14 +59,130 @@ func newAWSCmd() *cobra.Command {
 }
 
 func newAuditCmd() *cobra.Command {
+	var (
+		all         bool
+		profile     string
+		allProfiles bool
+		regions     []string
+		days        int
+		reportFmt   string
+		summary     bool
+		output      string
+		policyPath  string
+	)
+
 	cmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Run an audit against an AWS account",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !all {
+				return cmd.Help()
+			}
+			return runAllDomainsAudit(
+				cmd.Context(),
+				profile, allProfiles, regions, days,
+				reportFmt, summary, output, policyPath,
+				cmd.OutOrStdout(),
+			)
+		},
 	}
+
 	cmd.AddCommand(newCostCmd())
 	cmd.AddCommand(newSecurityCmd())
 	cmd.AddCommand(newDataProtectionCmd())
+
+	cmd.Flags().BoolVar(&all, "all", false, "Run all AWS audit domains: cost, security, dataprotection")
+	cmd.Flags().StringVar(&profile, "profile", "", "AWS profile name (default: uses environment / default profile)")
+	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
+	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
+	cmd.Flags().IntVar(&days, "days", 30, "Lookback window in days for cost queries")
+	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
+	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+
 	return cmd
+}
+
+// runAllDomainsAudit wires the three AWS domain engines, executes the unified
+// audit, renders output to w, and returns an error when policy enforcement
+// fires on any domain. Kubernetes is intentionally excluded — use
+// dp kubernetes audit for Kubernetes governance checks.
+func runAllDomainsAudit(
+	ctx context.Context,
+	profile string,
+	allProfiles bool,
+	regions []string,
+	days int,
+	reportFmt string,
+	summary bool,
+	output string,
+	policyPath string,
+	w io.Writer,
+) error {
+	policyCfg, err := loadPolicyFile(policyPath)
+	if err != nil {
+		return fmt.Errorf("load policy: %w", err)
+	}
+
+	awsProvider := common.NewDefaultAWSClientProvider()
+	costCollector := awscost.NewDefaultCostCollector()
+	secCollector := awssecurity.NewDefaultSecurityCollector()
+
+	costReg := rules.NewDefaultRuleRegistry()
+	for _, r := range costpack.New() {
+		costReg.Register(r)
+	}
+	secReg := rules.NewDefaultRuleRegistry()
+	for _, r := range secpack.New() {
+		secReg.Register(r)
+	}
+	dpReg := rules.NewDefaultRuleRegistry()
+	for _, r := range dppack.New() {
+		dpReg.Register(r)
+	}
+
+	costEng := engine.NewAWSCostEngine(awsProvider, costCollector, costReg, policyCfg)
+	secEng := engine.NewAWSSecurityEngine(awsProvider, secCollector, secReg, policyCfg)
+	dpEng := engine.NewAWSDataProtectionEngine(awsProvider, costCollector, secCollector, dpReg, policyCfg)
+
+	allEng := engine.NewAllAWSDomainsEngine(costEng, secEng, dpEng, policyCfg)
+
+	opts := engine.AllAWSAuditOptions{
+		Profile:     profile,
+		AllProfiles: allProfiles,
+		Regions:     regions,
+		DaysBack:    days,
+	}
+
+	report, enforcedDomains, err := allEng.RunAllAWSAudit(ctx, opts)
+	if err != nil {
+		return fmt.Errorf("all-domain audit failed: %w", err)
+	}
+
+	if output != "" {
+		if err := writeReportToFile(output, report); err != nil {
+			return err
+		}
+	}
+
+	if summary {
+		printSummary(w, report)
+	} else if reportFmt == "json" {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(report); err != nil {
+			return fmt.Errorf("encode report: %w", err)
+		}
+	} else {
+		printAllTable(w, report)
+	}
+
+	if len(enforcedDomains) > 0 {
+		return fmt.Errorf("policy enforcement triggered on domain(s): %s",
+			strings.Join(enforcedDomains, ", "))
+	}
+	return nil
 }
 
 // loadPolicyFile returns a PolicyConfig for the given path.
@@ -661,6 +777,39 @@ func printTable(report *models.AuditReport) {
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.EstimatedMonthlySavings,
+		)
+	}
+}
+
+// printAllTable renders the unified all-domain audit findings table.
+// Columns: RESOURCE ID, REGION, SEVERITY, TYPE, SAVINGS/MO.
+// Non-cost findings show $0.00 in the savings column.
+func printAllTable(w io.Writer, report *models.AuditReport) {
+	s := report.Summary
+	fmt.Fprintf(w,
+		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
+		report.Profile,
+		report.AccountID,
+		len(report.Regions),
+		s.TotalFindings,
+		s.TotalEstimatedMonthlySavings,
+	)
+
+	if len(report.Findings) == 0 {
+		fmt.Fprintln(w, "No findings.")
+		return
+	}
+
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-20s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE", "SAVINGS/MO")
+	fmt.Fprintln(w, strings.Repeat("-", 103))
+	for _, f := range report.Findings {
+		fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-20s  $%.2f\n",
+			f.ResourceID,
+			f.Region,
+			string(f.Severity),
+			string(f.ResourceType),
 			f.EstimatedMonthlySavings,
 		)
 	}
