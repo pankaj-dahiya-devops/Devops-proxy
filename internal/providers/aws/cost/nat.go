@@ -26,7 +26,7 @@ func collectNATGateways(
 	cwClient costCWClient,
 	region string,
 	daysBack int,
-) ([]models.NATGateway, error) {
+) ([]models.AWSNATGateway, error) {
 	input := &ec2svc.DescribeNatGatewaysInput{
 		Filter: []ec2types.Filter{
 			{
@@ -38,7 +38,7 @@ func collectNATGateways(
 
 	paginator := ec2svc.NewDescribeNatGatewaysPaginator(ec2Client, input)
 
-	var gateways []models.NATGateway
+	var gateways []models.AWSNATGateway
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -60,8 +60,8 @@ func collectNATGateways(
 }
 
 // toNATGateway converts an SDK NAT Gateway to the internal model.
-func toNATGateway(ng ec2types.NatGateway, region string) models.NATGateway {
-	return models.NATGateway{
+func toNATGateway(ng ec2types.NatGateway, region string) models.AWSNATGateway {
+	return models.AWSNATGateway{
 		NATGatewayID:     aws.ToString(ng.NatGatewayId),
 		Region:           region,
 		State:            string(ng.State),

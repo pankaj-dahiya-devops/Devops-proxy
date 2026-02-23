@@ -44,15 +44,15 @@ type CostCollector interface {
 		provider common.AWSClientProvider,
 		regions []string,
 		daysBack int,
-	) ([]models.RegionData, *models.CostSummary, error)
+	) ([]models.AWSRegionData, *models.AWSCostSummary, error)
 
 	// CollectRegion gathers all cost-relevant resources within a single region:
 	// EC2 instances, EBS volumes, NAT Gateways, RDS instances, and Load Balancers.
 	// SavingsPlanCoverage is NOT populated here; CollectAll fills it centrally.
-	CollectRegion(ctx context.Context, cfg aws.Config, opts CollectOptions) (*models.RegionData, error)
+	CollectRegion(ctx context.Context, cfg aws.Config, opts CollectOptions) (*models.AWSRegionData, error)
 
 	// CollectCostExplorer gathers account-level billing data from Cost Explorer.
 	// This is a global (non-regional) call; the region in cfg is overridden to
 	// us-east-1 internally. Returns a CostSummary covering the last opts.DaysBack days.
-	CollectCostExplorer(ctx context.Context, cfg aws.Config, opts CollectOptions) (*models.CostSummary, error)
+	CollectCostExplorer(ctx context.Context, cfg aws.Config, opts CollectOptions) (*models.AWSCostSummary, error)
 }

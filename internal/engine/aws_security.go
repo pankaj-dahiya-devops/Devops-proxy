@@ -138,19 +138,20 @@ func (e *AWSSecurityEngine) resolveRegionsSec(
 // A single RuleContext is used because security data is account-level: IAM,
 // root, and S3 are global; SG rules carry their own region via the Region field.
 func (e *AWSSecurityEngine) evaluateSecurity(
-	secData *models.SecurityData,
+	secData *models.AWSSecurityData,
 	accountID, profile string,
 ) []models.Finding {
 	rctx := rules.RuleContext{
 		AccountID: accountID,
 		Profile:   profile,
-		RegionData: &models.RegionData{
+		RegionData: &models.AWSRegionData{
 			Region:   "global",
 			Security: *secData,
 		},
 		Policy: e.policy,
 	}
 	raw := e.registry.EvaluateAll(rctx)
+	stampDomain(raw, "security")
 	return mergeFindings(raw)
 }
 

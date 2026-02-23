@@ -27,7 +27,7 @@ func collectEC2Instances(
 	cwClient costCWClient,
 	region string,
 	daysBack int,
-) ([]models.EC2Instance, error) {
+) ([]models.AWSEC2Instance, error) {
 	input := &ec2svc.DescribeInstancesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -39,7 +39,7 @@ func collectEC2Instances(
 
 	paginator := ec2svc.NewDescribeInstancesPaginator(ec2Client, input)
 
-	var instances []models.EC2Instance
+	var instances []models.AWSEC2Instance
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -67,7 +67,7 @@ func collectEC2Instances(
 }
 
 // toEC2Instance converts an SDK EC2 instance to the internal model.
-func toEC2Instance(inst ec2types.Instance, region string) models.EC2Instance {
+func toEC2Instance(inst ec2types.Instance, region string) models.AWSEC2Instance {
 	var state string
 	if inst.State != nil {
 		state = string(inst.State.Name)
@@ -78,7 +78,7 @@ func toEC2Instance(inst ec2types.Instance, region string) models.EC2Instance {
 		launchTime = *inst.LaunchTime
 	}
 
-	return models.EC2Instance{
+	return models.AWSEC2Instance{
 		InstanceID:    aws.ToString(inst.InstanceId),
 		Region:        region,
 		InstanceType:  string(inst.InstanceType),

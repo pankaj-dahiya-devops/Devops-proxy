@@ -18,10 +18,10 @@ import (
 // package and a separate collector if needed in a future step.
 //
 // RequestCount is left at 0 — CloudWatch integration is a future step.
-func collectLoadBalancers(ctx context.Context, client costELBv2Client, region string) ([]models.LoadBalancer, error) {
+func collectLoadBalancers(ctx context.Context, client costELBv2Client, region string) ([]models.AWSLoadBalancer, error) {
 	paginator := elbv2svc.NewDescribeLoadBalancersPaginator(client, &elbv2svc.DescribeLoadBalancersInput{})
 
-	var lbs []models.LoadBalancer
+	var lbs []models.AWSLoadBalancer
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -35,13 +35,13 @@ func collectLoadBalancers(ctx context.Context, client costELBv2Client, region st
 }
 
 // toLoadBalancer converts an SDK ELBv2 LoadBalancer to the internal model.
-func toLoadBalancer(lb elbv2types.LoadBalancer, region string) models.LoadBalancer {
+func toLoadBalancer(lb elbv2types.LoadBalancer, region string) models.AWSLoadBalancer {
 	var state string
 	if lb.State != nil {
 		state = string(lb.State.Code)
 	}
 
-	return models.LoadBalancer{
+	return models.AWSLoadBalancer{
 		LoadBalancerARN:  aws.ToString(lb.LoadBalancerArn),
 		LoadBalancerName: aws.ToString(lb.LoadBalancerName),
 		Region:           region,

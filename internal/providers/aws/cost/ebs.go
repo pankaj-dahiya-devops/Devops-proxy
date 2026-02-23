@@ -14,7 +14,7 @@ import (
 // collectEBSVolumes pages through all non-deleted EBS volumes in region and
 // converts them to internal models. The Attached flag is derived from the
 // volume state ("in-use" means attached).
-func collectEBSVolumes(ctx context.Context, client costEC2Client, region string) ([]models.EBSVolume, error) {
+func collectEBSVolumes(ctx context.Context, client costEC2Client, region string) ([]models.AWSEBSVolume, error) {
 	input := &ec2svc.DescribeVolumesInput{
 		Filters: []ec2types.Filter{
 			{
@@ -28,7 +28,7 @@ func collectEBSVolumes(ctx context.Context, client costEC2Client, region string)
 
 	paginator := ec2svc.NewDescribeVolumesPaginator(client, input)
 
-	var volumes []models.EBSVolume
+	var volumes []models.AWSEBSVolume
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -42,7 +42,7 @@ func collectEBSVolumes(ctx context.Context, client costEC2Client, region string)
 }
 
 // toEBSVolume converts an SDK EBS volume to the internal model.
-func toEBSVolume(v ec2types.Volume, region string) models.EBSVolume {
+func toEBSVolume(v ec2types.Volume, region string) models.AWSEBSVolume {
 	state := string(v.State)
 	attached := v.State == ec2types.VolumeStateInUse
 
@@ -52,7 +52,7 @@ func toEBSVolume(v ec2types.Volume, region string) models.EBSVolume {
 		instanceID = aws.ToString(v.Attachments[0].InstanceId)
 	}
 
-	return models.EBSVolume{
+	return models.AWSEBSVolume{
 		VolumeID:   aws.ToString(v.VolumeId),
 		Region:     region,
 		VolumeType: string(v.VolumeType),

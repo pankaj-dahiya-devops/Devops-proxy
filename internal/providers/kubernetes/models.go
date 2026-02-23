@@ -84,7 +84,7 @@ type ServiceInfo struct {
 }
 
 // ClusterData is the inventory collected from a single Kubernetes cluster.
-// It is the k8s equivalent of models.RegionData and is the input to k8s rules.
+// It is the k8s equivalent of models.AWSRegionData and is the input to k8s rules.
 type ClusterData struct {
 	ClusterInfo ClusterInfo
 	Nodes       []NodeInfo

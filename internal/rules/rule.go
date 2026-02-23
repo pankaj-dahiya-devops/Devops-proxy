@@ -16,11 +16,11 @@ type RuleContext struct {
 	Profile string
 
 	// RegionData holds all resources collected from the target region.
-	RegionData *models.RegionData
+	RegionData *models.AWSRegionData
 
 	// CostSummary is the account-level Cost Explorer data, shared across
 	// all regional evaluations. May be nil if collection failed.
-	CostSummary *models.CostSummary
+	CostSummary *models.AWSCostSummary
 
 	// Policy holds the active PolicyConfig for threshold overrides. May be nil
 	// when no policy file is loaded; rules must treat nil as "use defaults".

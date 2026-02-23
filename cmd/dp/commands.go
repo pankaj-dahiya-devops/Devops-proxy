@@ -20,10 +20,10 @@ import (
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
-	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/dataprotection"
+	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
+	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
 	k8spack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
-	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/security"
+	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
 )
 
 func newRootCmd() *cobra.Command {
@@ -525,13 +525,14 @@ func printDataProtectionTable(report *models.AuditReport) {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE")
-	fmt.Println(strings.Repeat("-", 88))
+	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE")
+	fmt.Println(strings.Repeat("-", 105))
 	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  %s\n",
+		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.Domain,
 			string(f.ResourceType),
 		)
 	}
@@ -738,13 +739,14 @@ func printKubernetesTable(report *models.AuditReport) {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-42s  %-30s  %-10s  %s\n", "RESOURCE ID", "CONTEXT", "SEVERITY", "TYPE")
-	fmt.Println(strings.Repeat("-", 95))
+	fmt.Printf("%-42s  %-30s  %-10s  %-15s  %s\n", "RESOURCE ID", "CONTEXT", "SEVERITY", "DOMAIN", "TYPE")
+	fmt.Println(strings.Repeat("-", 112))
 	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-30s  %-10s  %s\n",
+		fmt.Printf("%-42s  %-30s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.Domain,
 			string(f.ResourceType),
 		)
 	}
@@ -770,13 +772,14 @@ func printTable(report *models.AuditReport) {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "SAVINGS/MO")
-	fmt.Println(strings.Repeat("-", 82))
+	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "SAVINGS/MO")
+	fmt.Println(strings.Repeat("-", 99))
 	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  $%.2f\n",
+		fmt.Printf("%-42s  %-15s  %-10s  %-15s  $%.2f\n",
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.Domain,
 			f.EstimatedMonthlySavings,
 		)
 	}
@@ -802,13 +805,14 @@ func printAllTable(w io.Writer, report *models.AuditReport) {
 	}
 
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-20s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE", "SAVINGS/MO")
-	fmt.Fprintln(w, strings.Repeat("-", 103))
+	fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-15s  %-20s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE", "SAVINGS/MO")
+	fmt.Fprintln(w, strings.Repeat("-", 120))
 	for _, f := range report.Findings {
-		fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-20s  $%.2f\n",
+		fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-15s  %-20s  $%.2f\n",
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.Domain,
 			string(f.ResourceType),
 			f.EstimatedMonthlySavings,
 		)
@@ -834,13 +838,14 @@ func printSecurityTable(report *models.AuditReport) {
 	}
 
 	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "TYPE")
-	fmt.Println(strings.Repeat("-", 88))
+	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE")
+	fmt.Println(strings.Repeat("-", 105))
 	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  %s\n",
+		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
 			string(f.Severity),
+			f.Domain,
 			string(f.ResourceType),
 		)
 	}

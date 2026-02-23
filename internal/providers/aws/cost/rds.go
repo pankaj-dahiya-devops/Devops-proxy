@@ -26,10 +26,10 @@ func collectRDSInstances(
 	cwClient costCWClient,
 	region string,
 	daysBack int,
-) ([]models.RDSInstance, error) {
+) ([]models.AWSRDSInstance, error) {
 	paginator := rdssvc.NewDescribeDBInstancesPaginator(client, &rdssvc.DescribeDBInstancesInput{})
 
-	var instances []models.RDSInstance
+	var instances []models.AWSRDSInstance
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -54,8 +54,8 @@ func collectRDSInstances(
 }
 
 // toRDSInstance converts an SDK DBInstance to the internal model.
-func toRDSInstance(db rdstypes.DBInstance, region string) models.RDSInstance {
-	return models.RDSInstance{
+func toRDSInstance(db rdstypes.DBInstance, region string) models.AWSRDSInstance {
+	return models.AWSRDSInstance{
 		DBInstanceID:     aws.ToString(db.DBInstanceIdentifier),
 		Region:           region,
 		DBInstanceClass:  aws.ToString(db.DBInstanceClass),

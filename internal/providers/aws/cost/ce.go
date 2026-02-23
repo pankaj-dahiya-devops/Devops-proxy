@@ -22,7 +22,7 @@ func collectCostSummary(
 	ctx context.Context,
 	client costCEClient,
 	start, end string,
-) (*models.CostSummary, error) {
+) (*models.AWSCostSummary, error) {
 	// Per-service cost accumulator across all time periods.
 	serviceTotals := make(map[string]float64)
 
@@ -74,10 +74,10 @@ func collectCostSummary(
 	}
 
 	// Build breakdown sorted by cost descending (most expensive first).
-	breakdown := make([]models.ServiceCost, 0, len(serviceTotals))
+	breakdown := make([]models.AWSServiceCost, 0, len(serviceTotals))
 	for service, cost := range serviceTotals {
 		if cost > 0 {
-			breakdown = append(breakdown, models.ServiceCost{
+			breakdown = append(breakdown, models.AWSServiceCost{
 				Service: service,
 				CostUSD: cost,
 			})
@@ -87,7 +87,7 @@ func collectCostSummary(
 		return breakdown[i].CostUSD > breakdown[j].CostUSD
 	})
 
-	return &models.CostSummary{
+	return &models.AWSCostSummary{
 		PeriodStart:      start,
 		PeriodEnd:        end,
 		TotalCostUSD:     totalCost,

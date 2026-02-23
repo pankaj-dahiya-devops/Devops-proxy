@@ -116,7 +116,7 @@ func (e *AWSCostEngine) runAllProfiles(
 		allFindings     []models.Finding
 		allRegions      []string
 		seenRegions     = make(map[string]struct{})
-		lastCostSummary *models.CostSummary
+		lastCostSummary *models.AWSCostSummary
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -183,10 +183,10 @@ func (e *AWSCostEngine) resolveRegions(
 }
 
 // evaluateAll applies every registered rule to each region's collected data
-// and returns the merged findings slice.
+// and returns the merged findings slice with Domain stamped.
 func (e *AWSCostEngine) evaluateAll(
-	regionData []models.RegionData,
-	costSummary *models.CostSummary,
+	regionData []models.AWSRegionData,
+	costSummary *models.AWSCostSummary,
 	accountID, profile string,
 ) []models.Finding {
 	var findings []models.Finding
@@ -200,7 +200,17 @@ func (e *AWSCostEngine) evaluateAll(
 		}
 		findings = append(findings, e.registry.EvaluateAll(rctx)...)
 	}
+	stampDomain(findings, "cost")
 	return findings
+}
+
+// stampDomain sets the Domain field on every finding in the slice.
+// It is called once per engine, immediately after rule evaluation,
+// before any merge or sort. This is the canonical location for domain tagging.
+func stampDomain(findings []models.Finding, domain string) {
+	for i := range findings {
+		findings[i].Domain = domain
+	}
 }
 
 // buildReport assembles the final AuditReport from collected data and findings.
@@ -211,7 +221,7 @@ func buildReport(
 	profile, accountID string,
 	regions []string,
 	findings []models.Finding,
-	costSummary *models.CostSummary,
+	costSummary *models.AWSCostSummary,
 	policyCfg *policy.PolicyConfig,
 ) *models.AuditReport {
 	merged := mergeFindings(findings)
@@ -244,7 +254,7 @@ type findingGroupKey struct {
 //   - Metadata["rules"]: []string of every RuleID that fired on this resource
 //
 // All other fields (ID, RuleID, ResourceType, Explanation, Recommendation,
-// DetectedAt, AccountID, Profile) are taken from the first finding in the group.
+// DetectedAt, AccountID, Profile, Domain) are taken from the first finding in the group.
 // Additional Metadata keys from later findings are merged in without overwriting
 // keys already set by earlier findings.
 // Insertion order of groups is preserved so sortFindings controls final order.
