@@ -35,6 +35,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newKubernetesCmd())
 	root.AddCommand(newPolicyCmd())
 	root.AddCommand(newVersionCmd())
+	root.AddCommand(newDoctorCmd())
 	return root
 }
 

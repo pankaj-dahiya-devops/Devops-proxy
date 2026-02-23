@@ -305,6 +305,74 @@ When built locally with `go build`, the defaults `dev / none / unknown` are used
 
 ---
 
+### Doctor
+
+```bash
+dp doctor [--profile=<name>] [--format=table|json]
+```
+
+Runs environment diagnostics and reports the status of AWS credentials, Kubernetes connectivity, and the optional policy file. Useful for first-time setup verification and CI preflight checks.
+
+#### Flags (`dp doctor`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--profile` | string | `""` | AWS profile to use (empty = default credential chain) |
+| `--format` | string | `"table"` | Output format: `table` or `json` |
+
+#### Table output (default)
+
+```
+Environment Diagnostics
+
+AWS (profile: prod):
+  Credentials: OK
+  STS Identity: OK (Account: 123456789012)
+  Regions API: OK
+
+Kubernetes:
+  Kubeconfig: OK
+  Current Context: OK (prod-eks)
+  API Reachable: OK
+
+Policy:
+  dp.yaml present: YES
+  Policy valid: OK
+```
+
+When `--profile` is omitted the header shows `AWS:` (no profile qualifier).
+
+#### JSON output (`--format=json`)
+
+```json
+{
+  "aws": {
+    "profile": "prod",
+    "credentials_ok": true,
+    "account_id": "123456789012",
+    "regions_ok": true
+  },
+  "kubernetes": {
+    "kubeconfig_ok": true,
+    "context": "prod-eks",
+    "api_reachable": true
+  },
+  "policy": {
+    "present": true,
+    "valid": true
+  },
+  "overall_healthy": true
+}
+```
+
+`aws.profile` is omitted from JSON when `--profile` is not set. JSON is emitted even when `overall_healthy` is `false`, so callers can parse and act on the structured result.
+
+Exit codes:
+- **0** — all checks passed, or only the policy file is missing (it is optional)
+- **1** — AWS or Kubernetes checks failed, or a policy file is present but invalid
+
+---
+
 ## Example Output
 
 ### `dp kubernetes inspect`
