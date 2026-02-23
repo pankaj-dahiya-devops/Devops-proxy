@@ -2,7 +2,7 @@
 
 An extensible DevOps execution engine with deterministic rule-based analysis and optional AI summarisation.
 
-Currently implements: **AWS cost audit**, **AWS security audit**, and **AWS data protection audit** — multi-profile, multi-region, CloudWatch-backed.
+Currently implements: **AWS cost audit**, **AWS security audit**, **AWS data protection audit**, **Kubernetes governance audit**, and a **unified `--all` mode** that runs all three AWS domains in one shot — multi-profile, multi-region, CloudWatch-backed.
 
 ---
 
@@ -129,6 +129,7 @@ Pass the policy file explicitly, or place `dp.yaml` in the working directory for
 | `dp aws audit cost` | ✅ | ✅ | `"cost"` |
 | `dp aws audit security` | ✅ | ✅ | `"security"` |
 | `dp aws audit dataprotection` | ✅ | ✅ | `"dataprotection"` |
+| `dp aws audit --all` | ✅ | ✅ per domain | `"cost"`, `"security"`, `"dataprotection"` |
 
 The policy layer is entirely optional and non-invasive: if no policy file is
 provided, behavior is identical to previous releases.
@@ -270,6 +271,70 @@ go build -o dp ./cmd/dp
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
 | `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
+
+### Unified AWS audit (`dp aws audit --all`)
+
+Runs all three AWS audit domains (cost, security, dataprotection) in one command
+and returns a single merged report. Policy is applied per-domain before merge;
+findings from different domains for the same resource are deduplicated (highest
+severity wins, savings summed).
+
+> **Provider boundary:** `dp aws audit --all` is AWS-scoped. Kubernetes belongs
+> to its own command: `dp kubernetes audit`.
+
+```bash
+# Run all AWS domains, table output
+./dp aws audit --all
+
+# Named profile, JSON output, save to file
+./dp aws audit --all --profile staging --report=json --output all-report.json
+
+# All profiles, compact summary
+./dp aws audit --all --all-profiles --summary
+
+# Specific regions
+./dp aws audit --all --region us-east-1 --region eu-west-1
+
+# With policy enforcement (exit 1 if any domain triggers fail_on_severity)
+./dp aws audit --all --policy ./dp.yaml
+```
+
+#### Output (`--all`, default table)
+
+```
+Profile: default       Account: 123456789012  Regions: 3  Findings: 6  Est. Savings: $88.00/mo
+
+RESOURCE ID                                REGION           SEVERITY    TYPE                  SAVINGS/MO
+-------------------------------------------------------------------------------------------------------
+123456789012                               global           CRITICAL    ROOT_ACCOUNT           $0.00
+mydb-prod                                  us-east-1        CRITICAL    RDS_INSTANCE           $0.00
+vol-0abc123                                us-east-1        HIGH        EBS_VOLUME             $8.00
+my-public-bucket                           global           HIGH        S3_BUCKET              $0.00
+```
+
+#### Flags (`dp aws audit --all`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--all` | bool | `false` | Run all AWS audit domains: cost, security, dataprotection |
+| `--profile` | string | `""` | Named AWS profile (empty = default/env credentials) |
+| `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
+| `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
+| `--days` | int | `30` | Lookback window for cost queries |
+| `--report` | string | `table` | Output format: `table` or `json` |
+| `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
+| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
+
+#### Merging behaviour
+
+| Scenario | Result |
+|----------|--------|
+| Same resource in cost and dataprotection | Single finding: highest severity, summed savings |
+| Different resources across domains | Kept as separate findings |
+| Policy per-domain | Applied inside each engine before global merge |
+| Policy enforcement | Exit 1 if any domain triggers `fail_on_severity`; all output is printed first |
+| `audit_type` in JSON | `"all"` |
 
 ### Kubernetes inspect
 
