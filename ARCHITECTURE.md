@@ -35,16 +35,18 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
        │                          │
 ┌──────▼──────────┐   ┌──────────▼─────────────────────┐
 │  internal/       │   │  internal/                      │
-│  rulepacks/      │   │  providers/aws/                 │
-│  - cost (6)      │   │  - cost/     CostCollector      │
-│  - security (4)  │   │  - security/ SecurityCollector  │
-│  - dataprotect.  │   │  - common/   AWSClientProvider  │
-│    (3)           │   │                                 │
-└──────┬──────────┘   └──────────┬─────────────────────┘
-       │                          │
-┌──────▼──────────────────────────▼─────────────────────┐
+│  rulepacks/           │   │  providers/aws/                 │
+│  - aws_cost (6)       │   │  - cost/     CostCollector      │
+│  - aws_security (4)   │   │  - security/ SecurityCollector  │
+│  - aws_dataprotection │   │  - common/   AWSClientProvider  │
+│    (3)                │   │                                 │
+│  - kubernetes (6)     │   │                                 │
+└──────┬──────────────┘   └──────────┬─────────────────────┘
+       │                              │
+┌──────▼──────────────────────────────▼─────────────────┐
 │  internal/rules        Rule interfaces + registry      │
-│  internal/models       Finding, AuditReport, etc.      │
+│  internal/models       findings.go / aws.go /          │
+│                        aws_security.go / kubernetes.go │
 │  internal/policy       dp.yaml loading + ApplyPolicy   │
 └───────────────────────────────────────────────────────┘
 
@@ -62,6 +64,8 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 | `dp aws audit cost` | AWSCostEngine | 6 | CostCollector (per-region EC2/EBS/NAT/RDS/ELB + Cost Explorer + SP coverage) |
 | `dp aws audit security` | AWSSecurityEngine | 4 | SecurityCollector (account-level IAM/root/S3/SGs) |
 | `dp aws audit dataprotection` | AWSDataProtectionEngine | 3 | CostCollector (EBS/RDS encrypted fields) + SecurityCollector (S3 encryption) |
+| `dp aws audit --all` | AllAWSDomainsEngine | 13 | All three domain engines; cross-domain merge + per-domain enforcement |
+| `dp kubernetes audit` | KubernetesEngine | 6 | KubeClientProvider (nodes + namespaces + LimitRanges + pods) |
 | `dp kubernetes inspect` | — | — | KubeClientProvider (context, API server, nodes, namespaces) |
 
 ## Concurrency Model
@@ -95,7 +99,7 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 ## Finding Lifecycle
 
 ```
-CollectAll → []RegionData
+CollectAll → []AWSRegionData
   → evaluateAll → []Finding (raw, may have duplicates per resource)
   → mergeFindings → []Finding (one per ResourceID+Region; savings summed, severity max)
   → ApplyPolicy → []Finding (filtered by dp.yaml rules)
@@ -116,12 +120,16 @@ Engine.RunAudit → *models.AuditReport
 
 ## Future Work
 
-- LLM summarization: findings → human-readable report (internal/llm stub ready)
+- LLM summarization: findings → human-readable report (`internal/llm` stub ready)
 - Coloured severity output (lipgloss)
-- Exit code 1 when CRITICAL/HIGH findings exist
+- Exit code 1 when CRITICAL/HIGH findings exist (separate from `--policy` enforcement)
+- Load Balancer idle detection (CloudWatch RequestCount)
+- EC2 on-demand without Savings Plan coverage rule
+- ALB_IDLE and EC2_NO_SAVINGS_PLAN rules
 - Terraform plan analysis
-- Azure support
-- GCP support
+- Azure provider module
+- GCP provider module
 - SaaS backend with org-wide aggregation
 - Scheduled audits
 - Compliance scoring
+- Binary releases via GoReleaser CI pipeline
