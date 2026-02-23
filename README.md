@@ -567,34 +567,44 @@ internal/providers/kubernetes/
   collector.go     CollectClusterData: nodes + namespaces (accepts kubernetes.Interface)
 
 internal/rules/
-  rule.go                        Rule interface, RuleContext, RuleRegistry interface
-  registry.go                    DefaultRuleRegistry
-  ec2_low_cpu.go                 EC2_LOW_CPU: running instances with avg CPU < 10%
-  ebs_unattached.go              EBS_UNATTACHED: volumes in "available" state
-  ebs_gp2_legacy.go              EBS_GP2_LEGACY: gp2 volumes that should migrate to gp3
-  nat_low_traffic.go             NAT_LOW_TRAFFIC: gateways with < 1 GB traffic
-  savings_plan_underutilized.go  SAVINGS_PLAN_UNDERUTILIZED: SP coverage < 60%
-  rds_low_cpu.go                 RDS_LOW_CPU: available instances with avg CPU < 10%
-  root_access_key.go             ROOT_ACCESS_KEY: root account has active access keys
-  s3_public_bucket.go            S3_PUBLIC_BUCKET: bucket lacks full public access block
-  sg_open_ssh.go                 SG_OPEN_SSH: security group exposes SSH/RDP to 0.0.0.0/0
-  iam_user_no_mfa.go             IAM_USER_NO_MFA: console IAM user has no MFA device
-  ebs_unencrypted.go             EBS_UNENCRYPTED: EBS volume not encrypted at rest
-  rds_unencrypted.go             RDS_UNENCRYPTED: RDS instance storage not encrypted
-  s3_default_encryption_missing.go  S3_DEFAULT_ENCRYPTION_MISSING: bucket has no default SSE
+  rule.go                               Rule interface, RuleContext, RuleRegistry interface
+  registry.go                           DefaultRuleRegistry
+  aws_ec2_low_cpu.go                    EC2_LOW_CPU: running instances with avg CPU < 10%
+  aws_ebs_unattached.go                 EBS_UNATTACHED: volumes in "available" state
+  aws_ebs_gp2_legacy.go                EBS_GP2_LEGACY: gp2 volumes that should migrate to gp3
+  aws_nat_low_traffic.go                NAT_LOW_TRAFFIC: gateways with < 1 GB traffic
+  aws_savings_plan_underutilized.go     SAVINGS_PLAN_UNDERUTILIZED: SP coverage < 60%
+  aws_rds_low_cpu.go                    RDS_LOW_CPU: available instances with avg CPU < 10%
+  aws_root_access_key.go                ROOT_ACCESS_KEY: root account has active access keys
+  aws_s3_public_bucket.go               S3_PUBLIC_BUCKET: bucket lacks full public access block
+  aws_sg_open_ssh.go                    SG_OPEN_SSH: security group exposes SSH/RDP to 0.0.0.0/0
+  aws_iam_user_no_mfa.go               IAM_USER_NO_MFA: console IAM user has no MFA device
+  aws_ebs_unencrypted.go                EBS_UNENCRYPTED: EBS volume not encrypted at rest
+  aws_rds_unencrypted.go                RDS_UNENCRYPTED: RDS instance storage not encrypted
+  aws_s3_default_encryption_missing.go  S3_DEFAULT_ENCRYPTION_MISSING: bucket has no default SSE
+  k8s_rules.go                          K8S rules: single-node, overallocated, namespace limits,
+                                         privileged container, public LoadBalancer, pod no requests
 
-internal/rulepacks/cost/
+internal/rulepacks/aws_cost/
   pack.go          New() []rules.Rule — all 6 cost rules
 
-internal/rulepacks/security/
+internal/rulepacks/aws_security/
   pack.go          New() []rules.Rule — all 4 security rules
 
-internal/rulepacks/dataprotection/
+internal/rulepacks/aws_dataprotection/
   pack.go          New() []rules.Rule — 3 data-protection rules (RDS, EBS, S3)
 
+internal/rulepacks/kubernetes/
+  pack.go          New() []rules.Rule — 6 Kubernetes governance rules
+
 internal/models/
-  findings.go      Finding, AuditReport, AuditSummary, all resource types
-  security.go      S3Bucket, SecurityGroupRule, IAMUser, RootAccountInfo, SecurityData
+  findings.go      Cloud-agnostic core: Severity, ResourceType, Finding, AuditSummary, AuditReport
+  aws.go           AWS raw infrastructure types: AWSEC2Instance, AWSEBSVolume, AWSNATGateway,
+                   AWSRDSInstance, AWSLoadBalancer, AWSSavingsPlanCoverage, AWSRegionData,
+                   AWSServiceCost, AWSCostSummary
+  aws_security.go  AWS security types: AWSSecurityData, AWSS3Bucket, AWSSecurityGroupRule,
+                   AWSIAMUser, AWSRootAccountInfo
+  kubernetes.go    KubernetesClusterData, KubernetesNodeData, KubernetesNamespaceData
 ```
 
 ### Engine pipeline
@@ -639,20 +649,20 @@ LoadProfile(s)
 
 ### Test coverage
 
-131 unit tests across rule engine, policy layer, data-protection rules, security rules, k8s provider, engine core, and CLI:
-- `EBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
-- `EBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
-- `EC2LowCPURule` — 13 subtests (CW sentinel, threshold boundary, state filtering, CE cost skip, savings proportional)
-- `NATLowTrafficRule` — 12 subtests (0/0.5GB flagged, 1.0/5GB not flagged, state filtering, fields)
-- `SavingsPlanUnderutilizedRule` — 11 subtests (HIGH/MEDIUM boundary, coverage/cost thresholds, mixed regions)
-- `RDSLowCPURule` — 13 subtests (HIGH < 5%, MEDIUM 5–10%, boundary, status filter, CE cost skip, fields)
-- `S3PublicBucketRule` — 5 tests (ID, nil data, no public, public bucket, no-policy → not flagged, multiple public)
-- `SecurityGroupOpenSSHRule` — 7 tests (ID, nil data, non-admin ports, restricted CIDR, SSH, RDP, dedup)
-- `IAMUserWithoutMFARule` — 7 tests (ID, nil data, all MFA, API-only user skipped, console user no MFA, multiple missing)
-- `RootAccessKeyExistsRule` — 4 tests (ID, nil data, no keys, has keys with field validation)
-- `EBSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → HIGH, multiple)
-- `RDSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → CRITICAL, multiple)
-- `S3DefaultEncryptionMissingRule` — 5 tests (ID, nil data, enabled → no finding, missing → HIGH, multiple)
+Unit tests across rule engine, policy layer, data-protection rules, security rules, k8s provider, engine core, and CLI:
+- `AWSEBSUnattachedRule` — 9 subtests (trigger logic, savings calculation, field validation)
+- `AWSEBSGP2LegacyRule` — 10 subtests (all non-gp2 types, savings, mixed sets)
+- `AWSEC2LowCPURule` — 13 subtests (CW sentinel, threshold boundary, state filtering, CE cost skip, savings proportional)
+- `AWSNATLowTrafficRule` — 12 subtests (0/0.5GB flagged, 1.0/5GB not flagged, state filtering, fields)
+- `AWSSavingsPlanUnderutilizedRule` — 11 subtests (HIGH/MEDIUM boundary, coverage/cost thresholds, mixed regions)
+- `AWSRDSLowCPURule` — 13 subtests (HIGH < 5%, MEDIUM 5–10%, boundary, status filter, CE cost skip, fields)
+- `AWSS3PublicBucketRule` — 5 tests (ID, nil data, no public, public bucket, no-policy → not flagged, multiple public)
+- `AWSSecurityGroupOpenSSHRule` — 7 tests (ID, nil data, non-admin ports, restricted CIDR, SSH, RDP, dedup)
+- `AWSIAMUserWithoutMFARule` — 7 tests (ID, nil data, all MFA, API-only user skipped, console user no MFA, multiple missing)
+- `AWSRootAccessKeyExistsRule` — 4 tests (ID, nil data, no keys, has keys with field validation)
+- `AWSEBSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → HIGH, multiple)
+- `AWSRDSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → CRITICAL, multiple)
+- `AWSS3DefaultEncryptionMissingRule` — 5 tests (ID, nil data, enabled → no finding, missing → HIGH, multiple)
 - k8s `CollectClusterData` — 4 tests with fake clientset (2 nodes + 3 namespaces, node fields, namespace names, empty cluster)
 - `mergeFindings` — 12 tests (dedup, severity upgrade, savings sum, metadata merge, input immutability)
 - `computeSummary` — 5 tests (severity counts, INFO handling, savings total)
@@ -668,20 +678,32 @@ LoadProfile(s)
 - [x] RDS low CPU detection (CloudWatch + Cost Explorer per-instance cost)
 - [x] Kubernetes provider foundation (kubeconfig loading, node + namespace collection)
 - [x] `dp kubernetes inspect` command (context, API server, node/namespace counts)
+- [x] `dp kubernetes audit` command with 6 rules (single-node, overallocated, namespace limits, privileged container, public LB, pod no requests)
 - [x] AWS security audit: S3, IAM MFA, root access keys, open SSH/RDP security groups
 - [x] `dp aws audit security` command with table, JSON, summary, and --output flag
 - [x] AWS data protection audit: EBS encryption, RDS storage encryption, S3 default encryption
 - [x] `dp aws audit dataprotection` command with table, JSON, summary, and --output flag
-- [x] `--policy` CLI flag on all three audit commands with auto-detection of `./dp.yaml`
-- [x] Policy integration for cost, security, and data protection engines
+- [x] `--policy` CLI flag on all four audit commands with auto-detection of `./dp.yaml`
+- [x] Policy integration for cost, security, data protection, and Kubernetes engines
 - [x] Threshold overrides via `rules.<ID>.params` in `dp.yaml` (EC2, RDS, NAT rules)
 - [x] Minimum severity enforcement per domain via `domains.<name>.min_severity`
 - [x] CI enforcement: exit code 1 on qualifying findings via `enforcement.<domain>.fail_on_severity`
+- [x] Parallel region collection (errgroup + semaphore, up to 5 concurrent regions)
+- [x] Parallel profile fan-out for `--all-profiles` (errgroup + semaphore, up to 3 concurrent profiles)
+- [x] `dp aws audit --all` — unified cross-domain report (cost + security + dataprotection)
+- [x] `AllAWSDomainsEngine` — per-domain policy enforcement + cross-domain dedup
+- [x] `dp doctor` command: AWS credentials, Kubernetes connectivity, policy preflight
+- [x] `dp policy validate` command
+- [x] Cloud-stratified models: `internal/models/` split into `findings.go`, `aws.go`, `aws_security.go`, `kubernetes.go`
+- [x] AWS namespace hardening: `aws_` rule file prefix, `AWS` struct prefix, `aws_cost` / `aws_security` / `aws_dataprotection` rulepacks
+- [x] Domain-aware findings (`Domain` field on `Finding`)
 - [ ] Load Balancer idle detection (CloudWatch RequestCount)
 - [ ] EC2 on-demand without Savings Plan coverage
-- [ ] Parallel region/profile collection (errgroup)
-- [ ] Exit code 1 on CRITICAL/HIGH findings (CI integration)
+- [ ] Coloured severity output (lipgloss)
+- [ ] Exit code 1 on CRITICAL/HIGH findings (separate from `--policy` enforcement)
+- [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
-- [ ] Kubernetes cluster cost intelligence (rule pack + engine integration)
-- [ ] Azure / GCP provider modules
+- [ ] Azure provider module
+- [ ] GCP provider module
 - [ ] SaaS backend with org-wide aggregation and scheduled audits
+- [ ] Binary releases via GoReleaser (CI pipeline)
