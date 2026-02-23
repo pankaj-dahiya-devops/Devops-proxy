@@ -35,7 +35,7 @@ func (c *DefaultSecurityCollector) CollectAll(
 	profile *common.ProfileConfig,
 	provider common.AWSClientProvider,
 	regions []string,
-) (*models.SecurityData, error) {
+) (*models.AWSSecurityData, error) {
 	// Global clients: us-east-1 is the canonical region for S3 and IAM.
 	globalCfg := provider.ConfigForRegion(profile, "us-east-1")
 	globalClients := c.factory(globalCfg)
@@ -45,7 +45,7 @@ func (c *DefaultSecurityCollector) CollectAll(
 	root, _ := collectRootAccountInfo(ctx, globalClients.IAM)
 
 	// Regional: collect security group rules per region and aggregate.
-	var allSGRules []models.SecurityGroupRule
+	var allSGRules []models.AWSSecurityGroupRule
 	for _, region := range regions {
 		regCfg := provider.ConfigForRegion(profile, region)
 		regClients := c.factory(regCfg)
@@ -56,7 +56,7 @@ func (c *DefaultSecurityCollector) CollectAll(
 		allSGRules = append(allSGRules, sgRules...)
 	}
 
-	return &models.SecurityData{
+	return &models.AWSSecurityData{
 		Buckets:            buckets,
 		SecurityGroupRules: allSGRules,
 		IAMUsers:           iamUsers,

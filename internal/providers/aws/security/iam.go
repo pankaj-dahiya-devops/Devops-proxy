@@ -14,9 +14,9 @@ import (
 // relevant security attributes: whether MFA is enabled and whether the user
 // has a console login profile (i.e. can sign in to the AWS console).
 // The ListUsers paginator handles accounts with many users.
-func collectIAMUsers(ctx context.Context, client iamAPIClient) ([]models.IAMUser, error) {
+func collectIAMUsers(ctx context.Context, client iamAPIClient) ([]models.AWSIAMUser, error) {
 	paginator := iamsvc.NewListUsersPaginator(client, &iamsvc.ListUsersInput{})
-	var users []models.IAMUser
+	var users []models.AWSIAMUser
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
@@ -24,7 +24,7 @@ func collectIAMUsers(ctx context.Context, client iamAPIClient) ([]models.IAMUser
 		}
 		for _, u := range page.Users {
 			userName := aws.ToString(u.UserName)
-			users = append(users, models.IAMUser{
+			users = append(users, models.AWSIAMUser{
 				UserName:        userName,
 				MFAEnabled:      userHasMFA(ctx, client, userName),
 				HasLoginProfile: userHasLoginProfile(ctx, client, userName),

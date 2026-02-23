@@ -13,20 +13,21 @@ const (
 	SeverityInfo     Severity = "INFO"
 )
 
-// ResourceType identifies the kind of AWS resource a finding refers to.
+// ResourceType identifies the kind of cloud resource a finding refers to.
 type ResourceType string
 
 const (
-	ResourceEC2           ResourceType = "EC2_INSTANCE"
-	ResourceEBS           ResourceType = "EBS_VOLUME"
-	ResourceNATGateway    ResourceType = "NAT_GATEWAY"
-	ResourceRDS           ResourceType = "RDS_INSTANCE"
-	ResourceLoadBalancer  ResourceType = "LOAD_BALANCER"
-	ResourceSavingsPlan   ResourceType = "SAVINGS_PLAN"
-	ResourceS3Bucket      ResourceType = "S3_BUCKET"
-	ResourceSecurityGroup ResourceType = "SECURITY_GROUP"
-	ResourceIAMUser       ResourceType = "IAM_USER"
-	ResourceRootAccount   ResourceType = "ROOT_ACCOUNT"
+	// AWS resource types
+	ResourceAWSEC2           ResourceType = "EC2_INSTANCE"
+	ResourceAWSEBS           ResourceType = "EBS_VOLUME"
+	ResourceAWSNATGateway    ResourceType = "NAT_GATEWAY"
+	ResourceAWSRDS           ResourceType = "RDS_INSTANCE"
+	ResourceAWSLoadBalancer  ResourceType = "LOAD_BALANCER"
+	ResourceAWSSavingsPlan   ResourceType = "SAVINGS_PLAN"
+	ResourceAWSS3Bucket      ResourceType = "S3_BUCKET"
+	ResourceAWSSecurityGroup ResourceType = "SECURITY_GROUP"
+	ResourceAWSIAMUser       ResourceType = "IAM_USER"
+	ResourceAWSRootAccount   ResourceType = "ROOT_ACCOUNT"
 
 	// Kubernetes resource types
 	ResourceK8sNode      ResourceType = "K8S_NODE"
@@ -67,121 +68,13 @@ type AuditSummary struct {
 
 // AuditReport is the top-level, SaaS-compatible output of any audit run.
 type AuditReport struct {
-	ReportID    string       `json:"report_id"`
-	GeneratedAt time.Time    `json:"generated_at"`
-	AuditType   string       `json:"audit_type"`
-	Profile     string       `json:"profile"`
-	AccountID   string       `json:"account_id"`
-	Regions     []string     `json:"regions"`
-	Summary     AuditSummary `json:"summary"`
-	Findings    []Finding    `json:"findings"`
-	CostSummary *CostSummary `json:"cost_summary,omitempty"`
-}
-
-// ---------------------------------------------------------------------------
-// Cost Explorer models
-// ---------------------------------------------------------------------------
-
-// ServiceCost holds the aggregated cost for a single AWS service.
-type ServiceCost struct {
-	Service string  `json:"service"`
-	CostUSD float64 `json:"cost_usd"`
-}
-
-// CostSummary holds account-level Cost Explorer data for a billing period.
-type CostSummary struct {
-	PeriodStart      string        `json:"period_start"`
-	PeriodEnd        string        `json:"period_end"`
-	TotalCostUSD     float64       `json:"total_cost_usd"`
-	ServiceBreakdown []ServiceCost `json:"service_breakdown"`
-}
-
-// ---------------------------------------------------------------------------
-// Raw resource models (collected by provider, consumed by rule engine)
-// ---------------------------------------------------------------------------
-
-// EC2Instance represents a single collected EC2 instance.
-type EC2Instance struct {
-	InstanceID     string            `json:"instance_id"`
-	Region         string            `json:"region"`
-	InstanceType   string            `json:"instance_type"`
-	State          string            `json:"state"`
-	LaunchTime     time.Time         `json:"launch_time"`
-	AvgCPUPercent  float64           `json:"avg_cpu_percent"`
-	MonthlyCostUSD float64           `json:"monthly_cost_usd"`
-	Tags           map[string]string `json:"tags,omitempty"`
-}
-
-// EBSVolume represents a single collected EBS volume.
-type EBSVolume struct {
-	VolumeID   string            `json:"volume_id"`
-	Region     string            `json:"region"`
-	VolumeType string            `json:"volume_type"`
-	SizeGB     int32             `json:"size_gb"`
-	State      string            `json:"state"`
-	Attached   bool              `json:"attached"`
-	Encrypted  bool              `json:"encrypted"`
-	InstanceID string            `json:"instance_id,omitempty"`
-	Tags       map[string]string `json:"tags,omitempty"`
-}
-
-// NATGateway represents a single collected NAT Gateway.
-type NATGateway struct {
-	NATGatewayID     string            `json:"nat_gateway_id"`
-	Region           string            `json:"region"`
-	State            string            `json:"state"`
-	VPCID            string            `json:"vpc_id"`
-	SubnetID         string            `json:"subnet_id"`
-	BytesProcessedGB float64           `json:"bytes_processed_gb"`
-	Tags             map[string]string `json:"tags,omitempty"`
-}
-
-// RDSInstance represents a single collected RDS database instance.
-type RDSInstance struct {
-	DBInstanceID     string            `json:"db_instance_id"`
-	Region           string            `json:"region"`
-	DBInstanceClass  string            `json:"db_instance_class"`
-	Engine           string            `json:"engine"`
-	MultiAZ          bool              `json:"multi_az"`
-	Status           string            `json:"status"`
-	StorageEncrypted bool              `json:"storage_encrypted"`
-	AvgCPUPercent    float64           `json:"avg_cpu_percent"`
-	MonthlyCostUSD   float64           `json:"monthly_cost_usd"`
-	Tags             map[string]string `json:"tags,omitempty"`
-}
-
-// LoadBalancer represents a single collected Elastic Load Balancer.
-type LoadBalancer struct {
-	LoadBalancerARN  string            `json:"load_balancer_arn"`
-	LoadBalancerName string            `json:"load_balancer_name"`
-	Region           string            `json:"region"`
-	Type             string            `json:"type"` // application | network | classic
-	State            string            `json:"state"`
-	RequestCount     int64             `json:"request_count"`
-	Tags             map[string]string `json:"tags,omitempty"`
-}
-
-// SavingsPlanCoverage holds Savings Plan / Reserved Instance coverage data
-// for a region over the collection period.
-type SavingsPlanCoverage struct {
-	Region          string  `json:"region"`
-	CoveragePercent float64 `json:"coverage_percent"`
-	OnDemandCostUSD float64 `json:"on_demand_cost_usd"`
-	CoveredCostUSD  float64 `json:"covered_cost_usd"`
-}
-
-// RegionData holds all raw resource data collected from a single AWS region.
-// It is passed to the rule engine for evaluation.
-type RegionData struct {
-	Region              string                `json:"region"`
-	EC2Instances        []EC2Instance         `json:"ec2_instances"`
-	EBSVolumes          []EBSVolume           `json:"ebs_volumes"`
-	NATGateways         []NATGateway          `json:"nat_gateways"`
-	RDSInstances        []RDSInstance         `json:"rds_instances"`
-	LoadBalancers       []LoadBalancer        `json:"load_balancers"`
-	SavingsPlanCoverage []SavingsPlanCoverage `json:"savings_plan_coverage"`
-	// Security holds the raw security posture data for this region and, when
-	// populated by the security collector, global account-level data (IAM, root,
-	// S3) is included in the Security field of the primary evaluation context.
-	Security SecurityData `json:"security,omitempty"`
+	ReportID    string          `json:"report_id"`
+	GeneratedAt time.Time       `json:"generated_at"`
+	AuditType   string          `json:"audit_type"`
+	Profile     string          `json:"profile"`
+	AccountID   string          `json:"account_id"`
+	Regions     []string        `json:"regions"`
+	Summary     AuditSummary    `json:"summary"`
+	Findings    []Finding       `json:"findings"`
+	CostSummary *AWSCostSummary `json:"cost_summary,omitempty"`
 }

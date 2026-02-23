@@ -59,7 +59,7 @@ func (d *DefaultCostCollector) CollectAll(
 	provider common.AWSClientProvider,
 	regions []string,
 	daysBack int,
-) ([]models.RegionData, *models.CostSummary, error) {
+) ([]models.AWSRegionData, *models.AWSCostSummary, error) {
 	days := effectiveDaysBack(daysBack)
 	start, end := billingDateRange(days)
 
@@ -89,7 +89,7 @@ func (d *DefaultCostCollector) CollectAll(
 
 	var (
 		mu           sync.Mutex
-		allRegionData []models.RegionData
+		allRegionData []models.AWSRegionData
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -121,7 +121,7 @@ REGIONS:
 
 			// 4. Attach Savings Plan coverage for this region.
 			if cov, ok := spCoverage[region]; ok {
-				rd.SavingsPlanCoverage = []models.SavingsPlanCoverage{cov}
+				rd.SavingsPlanCoverage = []models.AWSSavingsPlanCoverage{cov}
 			}
 
 			mu.Lock()
@@ -145,9 +145,9 @@ func (d *DefaultCostCollector) CollectRegion(
 	ctx context.Context,
 	cfg aws.Config,
 	opts CollectOptions,
-) (*models.RegionData, error) {
+) (*models.AWSRegionData, error) {
 	clients := d.factory(cfg)
-	rd := &models.RegionData{Region: opts.Region}
+	rd := &models.AWSRegionData{Region: opts.Region}
 
 	var err error
 
@@ -206,7 +206,7 @@ func (d *DefaultCostCollector) CollectCostExplorer(
 	ctx context.Context,
 	cfg aws.Config,
 	opts CollectOptions,
-) (*models.CostSummary, error) {
+) (*models.AWSCostSummary, error) {
 	// CE must always use us-east-1.
 	ceCfg := cfg
 	ceCfg.Region = "us-east-1"

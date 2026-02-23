@@ -164,13 +164,13 @@ func (e *AWSDataProtectionEngine) resolveRegionsDP(
 // Results from all contexts are merged (same ResourceID+Region deduplication)
 // before being returned.
 func (e *AWSDataProtectionEngine) evaluateDataProtection(
-	regionData []models.RegionData,
-	secData *models.SecurityData,
+	regionData []models.AWSRegionData,
+	secData *models.AWSSecurityData,
 	accountID, profile string,
 ) []models.Finding {
 	var raw []models.Finding
 
-	// Per-region: EBSUnencryptedRule and RDSUnencryptedRule fire here.
+	// Per-region: AWSEBSUnencryptedRule and AWSRDSUnencryptedRule fire here.
 	for i := range regionData {
 		rctx := rules.RuleContext{
 			AccountID:  accountID,
@@ -181,11 +181,11 @@ func (e *AWSDataProtectionEngine) evaluateDataProtection(
 		raw = append(raw, e.registry.EvaluateAll(rctx)...)
 	}
 
-	// Global: S3DefaultEncryptionMissingRule fires here.
+	// Global: AWSS3DefaultEncryptionMissingRule fires here.
 	rctx := rules.RuleContext{
 		AccountID: accountID,
 		Profile:   profile,
-		RegionData: &models.RegionData{
+		RegionData: &models.AWSRegionData{
 			Region:   "global",
 			Security: *secData,
 		},

@@ -116,7 +116,7 @@ func (e *AWSCostEngine) runAllProfiles(
 		allFindings     []models.Finding
 		allRegions      []string
 		seenRegions     = make(map[string]struct{})
-		lastCostSummary *models.CostSummary
+		lastCostSummary *models.AWSCostSummary
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -185,8 +185,8 @@ func (e *AWSCostEngine) resolveRegions(
 // evaluateAll applies every registered rule to each region's collected data
 // and returns the merged findings slice with Domain stamped.
 func (e *AWSCostEngine) evaluateAll(
-	regionData []models.RegionData,
-	costSummary *models.CostSummary,
+	regionData []models.AWSRegionData,
+	costSummary *models.AWSCostSummary,
 	accountID, profile string,
 ) []models.Finding {
 	var findings []models.Finding
@@ -221,7 +221,7 @@ func buildReport(
 	profile, accountID string,
 	regions []string,
 	findings []models.Finding,
-	costSummary *models.CostSummary,
+	costSummary *models.AWSCostSummary,
 	policyCfg *policy.PolicyConfig,
 ) *models.AuditReport {
 	merged := mergeFindings(findings)

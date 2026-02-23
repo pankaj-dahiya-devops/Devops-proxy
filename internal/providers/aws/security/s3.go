@@ -13,16 +13,16 @@ import (
 // collectS3Buckets lists all S3 buckets in the account and checks each
 // bucket's public-access status (GetBucketPolicyStatus) and whether default
 // server-side encryption is configured (GetBucketEncryption).
-func collectS3Buckets(ctx context.Context, client s3APIClient) ([]models.S3Bucket, error) {
+func collectS3Buckets(ctx context.Context, client s3APIClient) ([]models.AWSS3Bucket, error) {
 	out, err := client.ListBuckets(ctx, &s3svc.ListBucketsInput{})
 	if err != nil {
 		return nil, fmt.Errorf("list S3 buckets: %w", err)
 	}
 
-	buckets := make([]models.S3Bucket, 0, len(out.Buckets))
+	buckets := make([]models.AWSS3Bucket, 0, len(out.Buckets))
 	for _, b := range out.Buckets {
 		name := aws.ToString(b.Name)
-		buckets = append(buckets, models.S3Bucket{
+		buckets = append(buckets, models.AWSS3Bucket{
 			Name:                     name,
 			Public:                   isBucketPublic(ctx, client, name),
 			DefaultEncryptionEnabled: isBucketEncryptionEnabled(ctx, client, name),

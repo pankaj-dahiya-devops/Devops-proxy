@@ -20,5 +20,5 @@ type SecurityCollector interface {
 		profile *common.ProfileConfig,
 		provider common.AWSClientProvider,
 		regions []string,
-	) (*models.SecurityData, error)
+	) (*models.AWSSecurityData, error)
 }

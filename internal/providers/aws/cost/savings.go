@@ -28,7 +28,7 @@ func collectSavingsPlanCoverage(
 	ctx context.Context,
 	client costCEClient,
 	start, end string,
-) (map[string]models.SavingsPlanCoverage, error) {
+) (map[string]models.AWSSavingsPlanCoverage, error) {
 	// Accumulate per-region totals across all returned time periods.
 	type regionTotals struct {
 		onDemand float64
@@ -85,14 +85,14 @@ func collectSavingsPlanCoverage(
 	}
 
 	// Build the result map.
-	result := make(map[string]models.SavingsPlanCoverage, len(totals))
+	result := make(map[string]models.AWSSavingsPlanCoverage, len(totals))
 	for region, t := range totals {
 		var pct float64
 		total := t.onDemand + t.covered
 		if total > 0 {
 			pct = (t.covered / total) * 100
 		}
-		result[region] = models.SavingsPlanCoverage{
+		result[region] = models.AWSSavingsPlanCoverage{
 			Region:          region,
 			CoveragePercent: pct,
 			OnDemandCostUSD: t.onDemand,

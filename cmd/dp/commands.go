@@ -20,10 +20,10 @@ import (
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/cost"
-	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/dataprotection"
+	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
+	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
 	k8spack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
-	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/security"
+	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
 )
 
 func newRootCmd() *cobra.Command {
