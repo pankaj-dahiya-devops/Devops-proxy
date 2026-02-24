@@ -13,6 +13,7 @@ import (
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/engine"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
+	dpoutput "github.com/pankaj-dahiya-devops/Devops-proxy/internal/output"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/version"
@@ -179,7 +180,19 @@ func runAllDomainsAudit(
 			return fmt.Errorf("encode report: %w", err)
 		}
 	} else {
-		printAllTable(w, report, colored)
+		s := report.Summary
+		fmt.Fprintf(w, "Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
+			report.Profile, report.AccountID, len(report.Regions), s.TotalFindings, s.TotalEstimatedMonthlySavings)
+		if len(report.Findings) > 0 {
+			fmt.Fprintln(w)
+		}
+		dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
+			Colored:        colored,
+			IncludeSavings: true,
+			IncludeDomain:  true,
+			IncludeProfile: allProfiles,
+			LocationLabel:  "REGION",
+		})
 	}
 
 	if len(enforcedDomains) > 0 {
@@ -266,7 +279,19 @@ func newCostCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printTable(report, color)
+				s := report.Summary
+				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
+					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings, s.TotalEstimatedMonthlySavings)
+				if len(report.Findings) > 0 {
+					fmt.Println()
+				}
+				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
+					Colored:        color,
+					IncludeSavings: true,
+					IncludeDomain:  false,
+					IncludeProfile: allProfiles,
+					LocationLabel:  "REGION",
+				})
 			}
 
 			if policy.ShouldFail("cost", report.Findings, policyCfg) {
@@ -351,7 +376,19 @@ func newSecurityCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printSecurityTable(report, color)
+				s := report.Summary
+				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
+				if len(report.Findings) > 0 {
+					fmt.Println()
+				}
+				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
+					Colored:        color,
+					IncludeSavings: false,
+					IncludeDomain:  false,
+					IncludeProfile: allProfiles,
+					LocationLabel:  "REGION",
+				})
 			}
 
 			if policy.ShouldFail("security", report.Findings, policyCfg) {
@@ -436,7 +473,19 @@ func newDataProtectionCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printDataProtectionTable(report, color)
+				s := report.Summary
+				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
+				if len(report.Findings) > 0 {
+					fmt.Println()
+				}
+				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
+					Colored:        color,
+					IncludeSavings: false,
+					IncludeDomain:  false,
+					IncludeProfile: allProfiles,
+					LocationLabel:  "REGION",
+				})
 			}
 
 			if policy.ShouldFail("dataprotection", report.Findings, policyCfg) {
@@ -460,36 +509,6 @@ func newDataProtectionCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
-}
-
-// ANSI color codes for severity output (used when --color flag is set).
-const (
-	ansiReset   = "\033[0m"
-	ansiBoldRed = "\033[1;31m"
-	ansiRed     = "\033[0;31m"
-	ansiYellow  = "\033[0;33m"
-	ansiBlue    = "\033[0;34m"
-)
-
-// colorSeverity wraps a severity string with ANSI codes when colored is true.
-// When colored is false the string is returned unchanged (CI-safe default).
-func colorSeverity(sev models.Severity, colored bool) string {
-	s := string(sev)
-	if !colored {
-		return s
-	}
-	switch sev {
-	case models.SeverityCritical:
-		return ansiBoldRed + s + ansiReset
-	case models.SeverityHigh:
-		return ansiRed + s + ansiReset
-	case models.SeverityMedium:
-		return ansiYellow + s + ansiReset
-	case models.SeverityLow:
-		return ansiBlue + s + ansiReset
-	default:
-		return s
-	}
 }
 
 // hasCriticalOrHighFindings returns true when any finding has CRITICAL or HIGH
@@ -575,39 +594,6 @@ func topFindingsBySavings(findings []models.Finding, n int) []models.Finding {
 		n = len(sorted)
 	}
 	return sorted[:n]
-}
-
-// printDataProtectionTable renders the data-protection audit findings table.
-// Like security findings, these have no estimated savings; the last column
-// shows the resource type instead.
-// When colored is true, severity values are wrapped with ANSI color codes.
-func printDataProtectionTable(report *models.AuditReport, colored bool) {
-	s := report.Summary
-	fmt.Printf(
-		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
-		report.Profile,
-		report.AccountID,
-		len(report.Regions),
-		s.TotalFindings,
-	)
-
-	if len(report.Findings) == 0 {
-		fmt.Println("No findings.")
-		return
-	}
-
-	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE")
-	fmt.Println(strings.Repeat("-", 105))
-	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
-			f.ResourceID,
-			f.Region,
-			colorSeverity(f.Severity, colored),
-			f.Domain,
-			string(f.ResourceType),
-		)
-	}
 }
 
 // ── policy commands ───────────────────────────────────────────────────────────
@@ -778,7 +764,18 @@ func newKubernetesAuditCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printKubernetesTable(report, color)
+				s := report.Summary
+				fmt.Printf("Context: %-30s  Findings: %d\n", report.Profile, s.TotalFindings)
+				if len(report.Findings) > 0 {
+					fmt.Println()
+				}
+				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
+					Colored:        color,
+					IncludeSavings: false,
+					IncludeDomain:  false,
+					IncludeProfile: false,
+					LocationLabel:  "CONTEXT",
+				})
 			}
 
 			if policy.ShouldFail("kubernetes", report.Findings, policyCfg) {
@@ -802,134 +799,3 @@ func newKubernetesAuditCmd() *cobra.Command {
 	return cmd
 }
 
-// printKubernetesTable renders the Kubernetes audit findings table.
-// K8s findings have no estimated savings; the last column shows the resource type.
-// When colored is true, severity values are wrapped with ANSI color codes.
-func printKubernetesTable(report *models.AuditReport, colored bool) {
-	s := report.Summary
-	fmt.Printf(
-		"Context: %-30s  Findings: %d\n",
-		report.Profile,
-		s.TotalFindings,
-	)
-
-	if len(report.Findings) == 0 {
-		fmt.Println("No findings.")
-		return
-	}
-
-	fmt.Println()
-	fmt.Printf("%-42s  %-30s  %-10s  %-15s  %s\n", "RESOURCE ID", "CONTEXT", "SEVERITY", "DOMAIN", "TYPE")
-	fmt.Println(strings.Repeat("-", 112))
-	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-30s  %-10s  %-15s  %s\n",
-			f.ResourceID,
-			f.Region,
-			colorSeverity(f.Severity, colored),
-			f.Domain,
-			string(f.ResourceType),
-		)
-	}
-}
-
-// ── AWS output renderers ──────────────────────────────────────────────────────
-
-// printTable renders a human-readable summary followed by a findings table.
-// When colored is true, severity values are wrapped with ANSI color codes.
-func printTable(report *models.AuditReport, colored bool) {
-	s := report.Summary
-	fmt.Printf(
-		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
-		report.Profile,
-		report.AccountID,
-		len(report.Regions),
-		s.TotalFindings,
-		s.TotalEstimatedMonthlySavings,
-	)
-
-	if len(report.Findings) == 0 {
-		fmt.Println("No findings.")
-		return
-	}
-
-	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "SAVINGS/MO")
-	fmt.Println(strings.Repeat("-", 99))
-	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  %-15s  $%.2f\n",
-			f.ResourceID,
-			f.Region,
-			colorSeverity(f.Severity, colored),
-			f.Domain,
-			f.EstimatedMonthlySavings,
-		)
-	}
-}
-
-// printAllTable renders the unified all-domain audit findings table.
-// Columns: RESOURCE ID, REGION, SEVERITY, TYPE, SAVINGS/MO.
-// Non-cost findings show $0.00 in the savings column.
-// When colored is true, severity values are wrapped with ANSI color codes.
-func printAllTable(w io.Writer, report *models.AuditReport, colored bool) {
-	s := report.Summary
-	fmt.Fprintf(w,
-		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
-		report.Profile,
-		report.AccountID,
-		len(report.Regions),
-		s.TotalFindings,
-		s.TotalEstimatedMonthlySavings,
-	)
-
-	if len(report.Findings) == 0 {
-		fmt.Fprintln(w, "No findings.")
-		return
-	}
-
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-15s  %-20s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE", "SAVINGS/MO")
-	fmt.Fprintln(w, strings.Repeat("-", 120))
-	for _, f := range report.Findings {
-		fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-15s  %-20s  $%.2f\n",
-			f.ResourceID,
-			f.Region,
-			colorSeverity(f.Severity, colored),
-			f.Domain,
-			string(f.ResourceType),
-			f.EstimatedMonthlySavings,
-		)
-	}
-}
-
-// printSecurityTable renders the security audit findings table.
-// Security findings do not have estimated savings so the last column shows
-// the resource type instead.
-// When colored is true, severity values are wrapped with ANSI color codes.
-func printSecurityTable(report *models.AuditReport, colored bool) {
-	s := report.Summary
-	fmt.Printf(
-		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
-		report.Profile,
-		report.AccountID,
-		len(report.Regions),
-		s.TotalFindings,
-	)
-
-	if len(report.Findings) == 0 {
-		fmt.Println("No findings.")
-		return
-	}
-
-	fmt.Println()
-	fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n", "RESOURCE ID", "REGION", "SEVERITY", "DOMAIN", "TYPE")
-	fmt.Println(strings.Repeat("-", 105))
-	for _, f := range report.Findings {
-		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
-			f.ResourceID,
-			f.Region,
-			colorSeverity(f.Severity, colored),
-			f.Domain,
-			string(f.ResourceType),
-		)
-	}
-}
