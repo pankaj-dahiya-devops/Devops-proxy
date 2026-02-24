@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
@@ -11,27 +12,59 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
 )
 
-// KubernetesEngine orchestrates a Kubernetes governance audit.
-// It is cluster-agnostic: it does not assume any cloud provider.
-// There is no multi-region or multi-profile logic; each audit targets a single
-// cluster identified by a kubeconfig context name.
-type KubernetesEngine struct {
-	provider kube.KubeClientProvider
-	registry rules.RuleRegistry
-	policy   *policy.PolicyConfig
+// EKSDataCollector collects EKS-specific cluster configuration from the AWS EKS API.
+// The interface is defined here (engine layer) so the engine remains independent
+// of any AWS provider implementation; callers inject the concrete collector.
+// Nil means EKS data collection is disabled and EKS-specific rules are skipped.
+type EKSDataCollector interface {
+	CollectEKSData(ctx context.Context, clusterName, region string) (*models.KubernetesEKSData, error)
 }
 
-// NewKubernetesEngine constructs a KubernetesEngine wired to the supplied
-// provider, rule registry, and optional policy config.
+// KubernetesEngine orchestrates a Kubernetes governance audit.
+// It supports provider-aware rule evaluation: core rules always run;
+// EKS-specific rules run only when the cluster is detected as EKS.
+type KubernetesEngine struct {
+	provider     kube.KubeClientProvider
+	coreRegistry rules.RuleRegistry // always evaluated
+	eksRegistry  rules.RuleRegistry // evaluated only for EKS clusters; may be nil
+	eksCollector EKSDataCollector   // optional; nil disables EKS data collection
+	policy       *policy.PolicyConfig
+}
+
+// NewKubernetesEngine constructs a KubernetesEngine with core rules only.
+// EKS-specific rule evaluation and data collection are disabled.
+// Use NewKubernetesEngineWithEKS to enable provider-aware governance.
 func NewKubernetesEngine(
 	provider kube.KubeClientProvider,
 	registry rules.RuleRegistry,
 	policyCfg *policy.PolicyConfig,
 ) *KubernetesEngine {
 	return &KubernetesEngine{
-		provider: provider,
-		registry: registry,
-		policy:   policyCfg,
+		provider:     provider,
+		coreRegistry: registry,
+		policy:       policyCfg,
+	}
+}
+
+// NewKubernetesEngineWithEKS constructs a KubernetesEngine with provider-aware
+// governance. When the cluster is detected as EKS:
+//   - eksCollector fetches control-plane configuration (endpoint, logging, OIDC)
+//   - eksRegistry rules are evaluated in addition to coreRegistry rules
+//
+// eksRegistry and eksCollector may be nil (each is independently optional).
+func NewKubernetesEngineWithEKS(
+	provider kube.KubeClientProvider,
+	coreRegistry rules.RuleRegistry,
+	eksRegistry rules.RuleRegistry,
+	eksCollector EKSDataCollector,
+	policyCfg *policy.PolicyConfig,
+) *KubernetesEngine {
+	return &KubernetesEngine{
+		provider:     provider,
+		coreRegistry: coreRegistry,
+		eksRegistry:  eksRegistry,
+		eksCollector: eksCollector,
+		policy:       policyCfg,
 	}
 }
 
@@ -42,12 +75,11 @@ type KubernetesAuditOptions struct {
 	ContextName string
 
 	// ReportFormat controls the output format selected by the CLI layer.
-	// The engine itself does not render output; this field is passed through
-	// to the report for the caller's reference.
 	ReportFormat ReportFormat
 }
 
-// RunAudit connects to the cluster, collects inventory, evaluates all
+// RunAudit connects to the cluster, collects inventory, detects the cloud
+// provider, optionally collects EKS control-plane data, evaluates all
 // registered rules, applies policy filtering, and returns a populated AuditReport.
 func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOptions) (*models.AuditReport, error) {
 	clientset, info, err := e.provider.ClientsetForContext(opts.ContextName)
@@ -62,8 +94,31 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 
 	k8sData := convertClusterData(clusterData)
 
+	// ── Provider detection ────────────────────────────────────────────────────
+	k8sData.ClusterProvider = detectClusterProvider(k8sData.Nodes)
+
+	// ── EKS-specific data collection (non-fatal) ─────────────────────────────
+	if k8sData.ClusterProvider == "eks" && e.eksCollector != nil {
+		clusterName, region := extractEKSInfo(k8sData.Nodes)
+		if clusterName != "" && region != "" {
+			eksData, eksErr := e.eksCollector.CollectEKSData(ctx, clusterName, region)
+			if eksErr == nil {
+				k8sData.EKSData = eksData
+			}
+			// EKS collection failure is non-fatal: EKS rules skip on nil check.
+		}
+	}
+
+	// ── Rule evaluation ───────────────────────────────────────────────────────
 	rctx := rules.RuleContext{ClusterData: k8sData}
-	raw := e.registry.EvaluateAll(rctx)
+
+	raw := e.coreRegistry.EvaluateAll(rctx)
+
+	if k8sData.ClusterProvider == "eks" && e.eksRegistry != nil {
+		eksRaw := e.eksRegistry.EvaluateAll(rctx)
+		raw = append(raw, eksRaw...)
+	}
+
 	stampDomain(raw, "kubernetes")
 
 	merged := mergeFindings(raw)
@@ -79,7 +134,66 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 		Regions:     []string{info.ContextName},
 		Summary:     computeSummary(filtered),
 		Findings:    filtered,
+		Metadata: map[string]any{
+			"cluster_provider": k8sData.ClusterProvider,
+		},
 	}, nil
+}
+
+// detectClusterProvider inspects node ProviderID prefixes and well-known labels
+// to determine the cloud provider. Returns "eks", "gke", "aks", or "unknown".
+func detectClusterProvider(nodes []models.KubernetesNodeData) string {
+	for _, n := range nodes {
+		switch {
+		case strings.HasPrefix(n.ProviderID, "aws://"):
+			return "eks"
+		case strings.HasPrefix(n.ProviderID, "gce://"):
+			return "gke"
+		case strings.HasPrefix(n.ProviderID, "azure://"):
+			return "aks"
+		}
+		if _, ok := n.Labels["eks.amazonaws.com/nodegroup"]; ok {
+			return "eks"
+		}
+		if _, ok := n.Labels["cloud.google.com/gke-nodepool"]; ok {
+			return "gke"
+		}
+		if _, ok := n.Labels["kubernetes.azure.com/cluster"]; ok {
+			return "aks"
+		}
+	}
+	return "unknown"
+}
+
+// extractEKSInfo derives the EKS cluster name and AWS region from node labels.
+// Preferred sources:
+//   - cluster name: label "eks.amazonaws.com/cluster-name"
+//   - region:       label "topology.kubernetes.io/region"
+//
+// Falls back to parsing the ProviderID AZ field for the region when the label
+// is absent ("aws:///us-east-1a/i-xxx" → strip trailing AZ letter → "us-east-1").
+func extractEKSInfo(nodes []models.KubernetesNodeData) (clusterName, region string) {
+	for _, n := range nodes {
+		if cn, ok := n.Labels["eks.amazonaws.com/cluster-name"]; ok && cn != "" {
+			clusterName = cn
+		}
+		if r, ok := n.Labels["topology.kubernetes.io/region"]; ok && r != "" {
+			region = r
+		}
+		// Fallback: derive region from ProviderID AZ ("aws:///us-east-1a/i-xxx").
+		if region == "" && strings.HasPrefix(n.ProviderID, "aws://") {
+			parts := strings.Split(n.ProviderID, "/")
+			// parts: ["aws:", "", "", "us-east-1a", "i-xxx"]
+			if len(parts) >= 4 && len(parts[3]) > 1 {
+				az := parts[3]
+				region = az[:len(az)-1] // strip trailing AZ letter
+			}
+		}
+		if clusterName != "" && region != "" {
+			return
+		}
+	}
+	return
 }
 
 // convertClusterData translates the provider-layer ClusterData into the
@@ -90,10 +204,16 @@ func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
 		NodeCount:   len(data.Nodes),
 	}
 	for _, n := range data.Nodes {
+		labels := make(map[string]string, len(n.Labels))
+		for key, val := range n.Labels {
+			labels[key] = val
+		}
 		k.Nodes = append(k.Nodes, models.KubernetesNodeData{
 			Name:                 n.Name,
 			CPUCapacityMillis:    n.CPUCapacityMillis,
 			AllocatableCPUMillis: n.AllocatableCPUMillis,
+			ProviderID:           n.ProviderID,
+			Labels:               labels,
 		})
 	}
 	for _, ns := range data.Namespaces {

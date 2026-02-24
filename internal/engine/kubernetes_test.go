@@ -14,7 +14,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	k8spack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
+	k8scorepack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes_core"
 )
 
 // fakeKubeProvider is a test double for kube.KubeClientProvider that returns
@@ -61,7 +61,7 @@ func k8sLimitRange(namespace, name string) *corev1.LimitRange {
 // supplied fake provider.
 func newK8sEngine(provider kube.KubeClientProvider, policyCfg *policy.PolicyConfig) *KubernetesEngine {
 	registry := rules.NewDefaultRuleRegistry()
-	for _, r := range k8spack.New() {
+	for _, r := range k8scorepack.New() {
 		registry.Register(r)
 	}
 	return NewKubernetesEngine(provider, registry, policyCfg)

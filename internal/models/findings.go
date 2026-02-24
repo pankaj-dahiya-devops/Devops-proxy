@@ -77,4 +77,7 @@ type AuditReport struct {
 	Summary     AuditSummary    `json:"summary"`
 	Findings    []Finding       `json:"findings"`
 	CostSummary *AWSCostSummary `json:"cost_summary,omitempty"`
+	// Metadata carries optional, audit-type-specific key/value pairs.
+	// For Kubernetes audits this includes "cluster_provider".
+	Metadata map[string]any `json:"metadata,omitempty"`
 }

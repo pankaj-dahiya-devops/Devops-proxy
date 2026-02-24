@@ -18,13 +18,15 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/version"
 	awscost "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/cost"
+	awseks "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/eks"
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
-	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
-	k8spack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
-	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
+	costpack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
+	dppack      "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
+	secpack     "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
+	k8scorepack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes_core"
+	k8sekpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes_eks"
 )
 
 func newRootCmd() *cobra.Command {
@@ -634,7 +636,10 @@ func newPolicyValidateCmd() *cobra.Command {
 			for _, r := range dppack.New() {
 				ruleIDs = append(ruleIDs, r.ID())
 			}
-			for _, r := range k8spack.New() {
+			for _, r := range k8scorepack.New() {
+				ruleIDs = append(ruleIDs, r.ID())
+			}
+			for _, r := range k8sekpack.New() {
 				ruleIDs = append(ruleIDs, r.ID())
 			}
 
@@ -734,12 +739,23 @@ func newKubernetesAuditCmd() *cobra.Command {
 
 			provider := kube.NewDefaultKubeClientProvider()
 
-			registry := rules.NewDefaultRuleRegistry()
-			for _, r := range k8spack.New() {
-				registry.Register(r)
+			coreRegistry := rules.NewDefaultRuleRegistry()
+			for _, r := range k8scorepack.New() {
+				coreRegistry.Register(r)
 			}
 
-			eng := engine.NewKubernetesEngine(provider, registry, policyCfg)
+			eksRegistry := rules.NewDefaultRuleRegistry()
+			for _, r := range k8sekpack.New() {
+				eksRegistry.Register(r)
+			}
+
+			eng := engine.NewKubernetesEngineWithEKS(
+				provider,
+				coreRegistry,
+				eksRegistry,
+				awseks.NewDefaultEKSCollector(),
+				policyCfg,
+			)
 
 			opts := engine.KubernetesAuditOptions{
 				ContextName:  contextName,
