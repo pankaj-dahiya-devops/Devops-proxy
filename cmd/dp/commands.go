@@ -21,10 +21,12 @@ import (
 	awssecurity "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/security"
 	kube "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/kubernetes"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
-	costpack  "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
-	dppack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
-	k8spack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
-	secpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
+	costpack   "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_cost"
+	dppack     "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_dataprotection"
+	k8spack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes"
+	k8sekspack "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/kubernetes_eks"
+	secpack    "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rulepacks/aws_security"
+	awseks     "github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/eks"
 )
 
 func newRootCmd() *cobra.Command {
@@ -734,12 +736,23 @@ func newKubernetesAuditCmd() *cobra.Command {
 
 			provider := kube.NewDefaultKubeClientProvider()
 
-			registry := rules.NewDefaultRuleRegistry()
+			coreRegistry := rules.NewDefaultRuleRegistry()
 			for _, r := range k8spack.New() {
-				registry.Register(r)
+				coreRegistry.Register(r)
 			}
 
-			eng := engine.NewKubernetesEngine(provider, registry, policyCfg)
+			eksRegistry := rules.NewDefaultRuleRegistry()
+			for _, r := range k8sekspack.New() {
+				eksRegistry.Register(r)
+			}
+
+			eng := engine.NewKubernetesEngineWithEKS(
+				provider,
+				coreRegistry,
+				eksRegistry,
+				awseks.NewDefaultEKSCollector(),
+				policyCfg,
+			)
 
 			opts := engine.KubernetesAuditOptions{
 				ContextName:  contextName,
