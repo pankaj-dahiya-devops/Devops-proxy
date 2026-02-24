@@ -4,7 +4,10 @@ import (
 	"context"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	cloudtrailsvc "github.com/aws/aws-sdk-go-v2/service/cloudtrail"
+	configsvc "github.com/aws/aws-sdk-go-v2/service/configservice"
 	ec2svc "github.com/aws/aws-sdk-go-v2/service/ec2"
+	guardduty "github.com/aws/aws-sdk-go-v2/service/guardduty"
 	iamsvc "github.com/aws/aws-sdk-go-v2/service/iam"
 	s3svc "github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -33,11 +36,33 @@ type iamAPIClient interface {
 	GetAccountSummary(ctx context.Context, params *iamsvc.GetAccountSummaryInput, optFns ...func(*iamsvc.Options)) (*iamsvc.GetAccountSummaryOutput, error)
 }
 
+// cloudTrailAPIClient is the narrow CloudTrail interface for checking trail
+// configuration. DescribeTrails returns all trails for the account.
+type cloudTrailAPIClient interface {
+	DescribeTrails(ctx context.Context, params *cloudtrailsvc.DescribeTrailsInput, optFns ...func(*cloudtrailsvc.Options)) (*cloudtrailsvc.DescribeTrailsOutput, error)
+}
+
+// guardDutyAPIClient is the narrow GuardDuty interface for checking detector
+// status. ListDetectors returns detector IDs; GetDetector returns the status.
+type guardDutyAPIClient interface {
+	ListDetectors(ctx context.Context, params *guardduty.ListDetectorsInput, optFns ...func(*guardduty.Options)) (*guardduty.ListDetectorsOutput, error)
+	GetDetector(ctx context.Context, params *guardduty.GetDetectorInput, optFns ...func(*guardduty.Options)) (*guardduty.GetDetectorOutput, error)
+}
+
+// awsConfigAPIClient is the narrow AWS Config interface for checking recorder
+// status. DescribeConfigurationRecorderStatus returns recording state per recorder.
+type awsConfigAPIClient interface {
+	DescribeConfigurationRecorderStatus(ctx context.Context, params *configsvc.DescribeConfigurationRecorderStatusInput, optFns ...func(*configsvc.Options)) (*configsvc.DescribeConfigurationRecorderStatusOutput, error)
+}
+
 // secClients bundles all AWS service clients used by the security collector.
 type secClients struct {
-	S3  s3APIClient
-	EC2 ec2SecurityAPIClient
-	IAM iamAPIClient
+	S3         s3APIClient
+	EC2        ec2SecurityAPIClient
+	IAM        iamAPIClient
+	CloudTrail cloudTrailAPIClient
+	GuardDuty  guardDutyAPIClient
+	Config     awsConfigAPIClient
 }
 
 // secClientFactory creates secClients from an AWS config.
@@ -47,8 +72,11 @@ type secClientFactory func(cfg aws.Config) *secClients
 // newDefaultSecClients creates production AWS SDK clients from the given config.
 func newDefaultSecClients(cfg aws.Config) *secClients {
 	return &secClients{
-		S3:  s3svc.NewFromConfig(cfg),
-		EC2: ec2svc.NewFromConfig(cfg),
-		IAM: iamsvc.NewFromConfig(cfg),
+		S3:         s3svc.NewFromConfig(cfg),
+		EC2:        ec2svc.NewFromConfig(cfg),
+		IAM:        iamsvc.NewFromConfig(cfg),
+		CloudTrail: cloudtrailsvc.NewFromConfig(cfg),
+		GuardDuty:  guardduty.NewFromConfig(cfg),
+		Config:     configsvc.NewFromConfig(cfg),
 	}
 }

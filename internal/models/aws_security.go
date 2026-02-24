@@ -1,14 +1,17 @@
 package models
 
 // AWSSecurityData holds raw security posture data collected from an AWS account.
-// S3 buckets, IAM users, and root account info are global (account-level).
-// AWSSecurityGroupRules are aggregated from all audited regions; each entry
-// carries its Region so security rules can emit correctly attributed findings.
+// S3 buckets, IAM users, root account info, and CloudTrail are global (account-level).
+// AWSSecurityGroupRules, AWSGuardDutyStatus, and AWSConfigStatus are aggregated from
+// all audited regions; each entry carries its Region for accurate finding attribution.
 type AWSSecurityData struct {
 	Buckets            []AWSS3Bucket          `json:"buckets"`
 	SecurityGroupRules []AWSSecurityGroupRule `json:"security_group_rules"`
 	IAMUsers           []AWSIAMUser           `json:"iam_users"`
 	Root               AWSRootAccountInfo     `json:"root"`
+	CloudTrail         AWSCloudTrailStatus    `json:"cloud_trail"`
+	GuardDuty          []AWSGuardDutyStatus   `json:"guard_duty"`
+	Config             []AWSConfigStatus      `json:"config"`
 }
 
 // AWSS3Bucket represents an S3 bucket and its security attributes.
@@ -45,6 +48,33 @@ type AWSIAMUser struct {
 }
 
 // AWSRootAccountInfo captures relevant security attributes of the AWS root account.
+// DataAvailable is false when GetAccountSummary failed; rules must check this
+// field before evaluating security posture to avoid false positives on collection
+// failures.
 type AWSRootAccountInfo struct {
 	HasAccessKeys bool `json:"has_access_keys"`
+	MFAEnabled    bool `json:"mfa_enabled"`
+	DataAvailable bool `json:"data_available"`
+}
+
+// AWSCloudTrailStatus holds the CloudTrail configuration for an AWS account.
+// HasMultiRegionTrail is true when at least one trail is configured to record
+// events across all regions (IsMultiRegionTrail == true in AWS SDK response).
+type AWSCloudTrailStatus struct {
+	HasMultiRegionTrail bool `json:"has_multi_region_trail"`
+}
+
+// AWSGuardDutyStatus holds the GuardDuty detector status for a single region.
+// Enabled is true when at least one detector exists and is in ENABLED state.
+type AWSGuardDutyStatus struct {
+	Region  string `json:"region"`
+	Enabled bool   `json:"enabled"`
+}
+
+// AWSConfigStatus holds the AWS Config recorder status for a single region.
+// Enabled is true when at least one configuration recorder exists and is
+// actively recording (Recording == true in RecorderStatus).
+type AWSConfigStatus struct {
+	Region  string `json:"region"`
+	Enabled bool   `json:"enabled"`
 }
