@@ -30,6 +30,14 @@ type NodeInfo struct {
 
 	// AllocatableCPUMillis is AllocatableCPU expressed in millicores.
 	AllocatableCPUMillis int64
+
+	// ProviderID is node.Spec.ProviderID, used for cloud provider detection.
+	// Format examples: "aws:///us-east-1a/i-xxx", "gce://project/zone/name".
+	ProviderID string
+
+	// Labels is a copy of the node's label map, used for provider detection
+	// (e.g. "eks.amazonaws.com/nodegroup", "cloud.google.com/gke-nodepool").
+	Labels map[string]string
 }
 
 // NamespaceInfo holds basic namespace metadata.
