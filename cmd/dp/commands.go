@@ -69,11 +69,13 @@ func newAuditCmd() *cobra.Command {
 		summary     bool
 		output      string
 		policyPath  string
+		color       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "audit",
-		Short: "Run an audit against an AWS account",
+		Use:          "audit",
+		Short:        "Run an audit against an AWS account",
+		SilenceUsage: true, // business-outcome exits must not print usage
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !all {
 				return cmd.Help()
@@ -81,7 +83,7 @@ func newAuditCmd() *cobra.Command {
 			return runAllDomainsAudit(
 				cmd.Context(),
 				profile, allProfiles, regions, days,
-				reportFmt, summary, output, policyPath,
+				reportFmt, summary, output, policyPath, color,
 				cmd.OutOrStdout(),
 			)
 		},
@@ -100,14 +102,15 @@ func newAuditCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
 }
 
 // runAllDomainsAudit wires the three AWS domain engines, executes the unified
 // audit, renders output to w, and returns an error when policy enforcement
-// fires on any domain. Kubernetes is intentionally excluded — use
-// dp kubernetes audit for Kubernetes governance checks.
+// fires on any domain or when CRITICAL/HIGH findings exist.
+// Kubernetes is intentionally excluded — use dp kubernetes audit for Kubernetes governance checks.
 func runAllDomainsAudit(
 	ctx context.Context,
 	profile string,
@@ -118,6 +121,7 @@ func runAllDomainsAudit(
 	summary bool,
 	output string,
 	policyPath string,
+	colored bool,
 	w io.Writer,
 ) error {
 	policyCfg, err := loadPolicyFile(policyPath)
@@ -175,12 +179,16 @@ func runAllDomainsAudit(
 			return fmt.Errorf("encode report: %w", err)
 		}
 	} else {
-		printAllTable(w, report)
+		printAllTable(w, report, colored)
 	}
 
 	if len(enforcedDomains) > 0 {
 		return fmt.Errorf("policy enforcement triggered on domain(s): %s",
 			strings.Join(enforcedDomains, ", "))
+	}
+	if hasCriticalOrHighFindings(report.Findings) {
+		fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+		os.Exit(1)
 	}
 	return nil
 }
@@ -208,11 +216,13 @@ func newCostCmd() *cobra.Command {
 		summary     bool
 		output      string
 		policyPath  string
+		color       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "cost",
-		Short: "Audit AWS cost and identify wasted spend",
+		Use:          "cost",
+		Short:        "Audit AWS cost and identify wasted spend",
+		SilenceUsage: true, // business-outcome exits must not print usage
 		RunE: func(cmd *cobra.Command, args []string) error {
 			policyCfg, err := loadPolicyFile(policyPath)
 			if err != nil {
@@ -256,11 +266,15 @@ func newCostCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printTable(report)
+				printTable(report, color)
 			}
 
 			if policy.ShouldFail("cost", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
+			}
+			if hasCriticalOrHighFindings(report.Findings) {
+				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				os.Exit(1)
 			}
 			return nil
 		},
@@ -274,6 +288,7 @@ func newCostCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
 }
@@ -287,11 +302,13 @@ func newSecurityCmd() *cobra.Command {
 		summary     bool
 		output      string
 		policyPath  string
+		color       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "security",
-		Short: "Audit AWS security posture: S3 public access, open SSH, IAM MFA, root access keys",
+		Use:          "security",
+		Short:        "Audit AWS security posture: S3 public access, open SSH, IAM MFA, root access keys",
+		SilenceUsage: true, // business-outcome exits must not print usage
 		RunE: func(cmd *cobra.Command, args []string) error {
 			policyCfg, err := loadPolicyFile(policyPath)
 			if err != nil {
@@ -334,11 +351,15 @@ func newSecurityCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printSecurityTable(report)
+				printSecurityTable(report, color)
 			}
 
 			if policy.ShouldFail("security", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
+			}
+			if hasCriticalOrHighFindings(report.Findings) {
+				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				os.Exit(1)
 			}
 			return nil
 		},
@@ -351,6 +372,7 @@ func newSecurityCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
 }
@@ -364,11 +386,13 @@ func newDataProtectionCmd() *cobra.Command {
 		summary     bool
 		output      string
 		policyPath  string
+		color       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "dataprotection",
-		Short: "Audit AWS data protection: EBS encryption, RDS encryption, S3 default encryption",
+		Use:          "dataprotection",
+		Short:        "Audit AWS data protection: EBS encryption, RDS encryption, S3 default encryption",
+		SilenceUsage: true, // business-outcome exits must not print usage
 		RunE: func(cmd *cobra.Command, args []string) error {
 			policyCfg, err := loadPolicyFile(policyPath)
 			if err != nil {
@@ -412,11 +436,15 @@ func newDataProtectionCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printDataProtectionTable(report)
+				printDataProtectionTable(report, color)
 			}
 
 			if policy.ShouldFail("dataprotection", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
+			}
+			if hasCriticalOrHighFindings(report.Findings) {
+				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				os.Exit(1)
 			}
 			return nil
 		},
@@ -429,8 +457,51 @@ func newDataProtectionCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
+}
+
+// ANSI color codes for severity output (used when --color flag is set).
+const (
+	ansiReset   = "\033[0m"
+	ansiBoldRed = "\033[1;31m"
+	ansiRed     = "\033[0;31m"
+	ansiYellow  = "\033[0;33m"
+	ansiBlue    = "\033[0;34m"
+)
+
+// colorSeverity wraps a severity string with ANSI codes when colored is true.
+// When colored is false the string is returned unchanged (CI-safe default).
+func colorSeverity(sev models.Severity, colored bool) string {
+	s := string(sev)
+	if !colored {
+		return s
+	}
+	switch sev {
+	case models.SeverityCritical:
+		return ansiBoldRed + s + ansiReset
+	case models.SeverityHigh:
+		return ansiRed + s + ansiReset
+	case models.SeverityMedium:
+		return ansiYellow + s + ansiReset
+	case models.SeverityLow:
+		return ansiBlue + s + ansiReset
+	default:
+		return s
+	}
+}
+
+// hasCriticalOrHighFindings returns true when any finding has CRITICAL or HIGH
+// severity. This check is unconditional and independent of policy enforcement:
+// it fires regardless of dp.yaml settings.
+func hasCriticalOrHighFindings(findings []models.Finding) bool {
+	for _, f := range findings {
+		if f.Severity == models.SeverityCritical || f.Severity == models.SeverityHigh {
+			return true
+		}
+	}
+	return false
 }
 
 // printJSON writes the report as indented JSON to stdout.
@@ -509,7 +580,8 @@ func topFindingsBySavings(findings []models.Finding, n int) []models.Finding {
 // printDataProtectionTable renders the data-protection audit findings table.
 // Like security findings, these have no estimated savings; the last column
 // shows the resource type instead.
-func printDataProtectionTable(report *models.AuditReport) {
+// When colored is true, severity values are wrapped with ANSI color codes.
+func printDataProtectionTable(report *models.AuditReport, colored bool) {
 	s := report.Summary
 	fmt.Printf(
 		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
@@ -531,7 +603,7 @@ func printDataProtectionTable(report *models.AuditReport) {
 		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
-			string(f.Severity),
+			colorSeverity(f.Severity, colored),
 			f.Domain,
 			string(f.ResourceType),
 		)
@@ -661,11 +733,13 @@ func newKubernetesAuditCmd() *cobra.Command {
 		summary     bool
 		output      string
 		policyPath  string
+		color       bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "audit",
-		Short: "Audit a Kubernetes cluster: single-node, overallocated nodes, namespaces without LimitRanges",
+		Use:          "audit",
+		Short:        "Audit a Kubernetes cluster: single-node, overallocated nodes, namespaces without LimitRanges",
+		SilenceUsage: true, // business-outcome exits must not print usage
 		RunE: func(cmd *cobra.Command, args []string) error {
 			policyCfg, err := loadPolicyFile(policyPath)
 			if err != nil {
@@ -704,11 +778,15 @@ func newKubernetesAuditCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				printKubernetesTable(report)
+				printKubernetesTable(report, color)
 			}
 
 			if policy.ShouldFail("kubernetes", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
+			}
+			if hasCriticalOrHighFindings(report.Findings) {
+				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				os.Exit(1)
 			}
 			return nil
 		},
@@ -719,13 +797,15 @@ func newKubernetesAuditCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
 	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
+	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
 	return cmd
 }
 
 // printKubernetesTable renders the Kubernetes audit findings table.
 // K8s findings have no estimated savings; the last column shows the resource type.
-func printKubernetesTable(report *models.AuditReport) {
+// When colored is true, severity values are wrapped with ANSI color codes.
+func printKubernetesTable(report *models.AuditReport, colored bool) {
 	s := report.Summary
 	fmt.Printf(
 		"Context: %-30s  Findings: %d\n",
@@ -745,7 +825,7 @@ func printKubernetesTable(report *models.AuditReport) {
 		fmt.Printf("%-42s  %-30s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
-			string(f.Severity),
+			colorSeverity(f.Severity, colored),
 			f.Domain,
 			string(f.ResourceType),
 		)
@@ -755,7 +835,8 @@ func printKubernetesTable(report *models.AuditReport) {
 // ── AWS output renderers ──────────────────────────────────────────────────────
 
 // printTable renders a human-readable summary followed by a findings table.
-func printTable(report *models.AuditReport) {
+// When colored is true, severity values are wrapped with ANSI color codes.
+func printTable(report *models.AuditReport, colored bool) {
 	s := report.Summary
 	fmt.Printf(
 		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
@@ -778,7 +859,7 @@ func printTable(report *models.AuditReport) {
 		fmt.Printf("%-42s  %-15s  %-10s  %-15s  $%.2f\n",
 			f.ResourceID,
 			f.Region,
-			string(f.Severity),
+			colorSeverity(f.Severity, colored),
 			f.Domain,
 			f.EstimatedMonthlySavings,
 		)
@@ -788,7 +869,8 @@ func printTable(report *models.AuditReport) {
 // printAllTable renders the unified all-domain audit findings table.
 // Columns: RESOURCE ID, REGION, SEVERITY, TYPE, SAVINGS/MO.
 // Non-cost findings show $0.00 in the savings column.
-func printAllTable(w io.Writer, report *models.AuditReport) {
+// When colored is true, severity values are wrapped with ANSI color codes.
+func printAllTable(w io.Writer, report *models.AuditReport, colored bool) {
 	s := report.Summary
 	fmt.Fprintf(w,
 		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
@@ -811,7 +893,7 @@ func printAllTable(w io.Writer, report *models.AuditReport) {
 		fmt.Fprintf(w, "%-42s  %-15s  %-10s  %-15s  %-20s  $%.2f\n",
 			f.ResourceID,
 			f.Region,
-			string(f.Severity),
+			colorSeverity(f.Severity, colored),
 			f.Domain,
 			string(f.ResourceType),
 			f.EstimatedMonthlySavings,
@@ -822,7 +904,8 @@ func printAllTable(w io.Writer, report *models.AuditReport) {
 // printSecurityTable renders the security audit findings table.
 // Security findings do not have estimated savings so the last column shows
 // the resource type instead.
-func printSecurityTable(report *models.AuditReport) {
+// When colored is true, severity values are wrapped with ANSI color codes.
+func printSecurityTable(report *models.AuditReport, colored bool) {
 	s := report.Summary
 	fmt.Printf(
 		"Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
@@ -844,7 +927,7 @@ func printSecurityTable(report *models.AuditReport) {
 		fmt.Printf("%-42s  %-15s  %-10s  %-15s  %s\n",
 			f.ResourceID,
 			f.Region,
-			string(f.Severity),
+			colorSeverity(f.Severity, colored),
 			f.Domain,
 			string(f.ResourceType),
 		)

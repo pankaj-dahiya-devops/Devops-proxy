@@ -629,14 +629,20 @@ LoadProfile(s)
 | NAT_LOW_TRAFFIC | state == "available" and BytesOutToDestination < 1 GB | HIGH | $32/mo (fixed hourly cost) |
 | SAVINGS_PLAN_UNDERUTILIZED | SP coverage < 60% and on-demand cost > $100 | HIGH / MEDIUM | 10% of on-demand cost |
 | RDS_LOW_CPU | status == "available", avg CPU > 0% and < 10% | HIGH (< 5%) / MEDIUM | 30% of CE monthly cost |
+| ALB_IDLE | Application LB active with RequestCount == 0 over lookback window | HIGH | ~$18/mo |
+| EC2_NO_SAVINGS_PLAN | EC2 on-demand instances with zero Savings Plan coverage in region | HIGH | 20% of on-demand cost |
 
 ### Security rules
 
 | Rule ID | Trigger | Severity |
 |---------|---------|----------|
 | ROOT_ACCESS_KEY | Root account has ≥ 1 active access key (IAM GetAccountSummary) | CRITICAL |
+| ROOT_ACCOUNT_MFA_DISABLED | Root account MFA not enabled (`AccountMFAEnabled == 0`) | CRITICAL |
+| CLOUDTRAIL_NOT_MULTI_REGION | No CloudTrail trail configured with `IsMultiRegionTrail == true` | HIGH |
 | S3_PUBLIC_BUCKET | `GetBucketPolicyStatus` `IsPublic == true`; no-policy buckets → NOT flagged | HIGH |
 | SG_OPEN_SSH | Security group allows port 22 or 3389 from 0.0.0.0/0 or ::/0 | HIGH |
+| GUARDDUTY_DISABLED | GuardDuty detector not in ENABLED state in one or more regions | HIGH |
+| AWS_CONFIG_DISABLED | AWS Config recorder not actively recording in one or more regions | HIGH |
 | IAM_USER_NO_MFA | Console IAM user (`HasLoginProfile == true`) with no MFA device | MEDIUM |
 
 ### Data protection rules
@@ -659,13 +665,20 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - `AWSS3PublicBucketRule` — 5 tests (ID, nil data, no public, public bucket, no-policy → not flagged, multiple public)
 - `AWSSecurityGroupOpenSSHRule` — 7 tests (ID, nil data, non-admin ports, restricted CIDR, SSH, RDP, dedup)
 - `AWSIAMUserWithoutMFARule` — 7 tests (ID, nil data, all MFA, API-only user skipped, console user no MFA, multiple missing)
+- `AWSALBIdleRule` — 7 tests (ID, nil data, NLB ignored, inactive ignored, active ALB with traffic not flagged, idle ALB flagged, multiple)
+- `AWSEC2NoSavingsPlanRule` — 7 tests (ID, nil data, no instances, zero-cost instance skipped, coverage present not flagged, no coverage flagged, distinct from SAVINGS_PLAN_UNDERUTILIZED)
 - `AWSRootAccessKeyExistsRule` — 4 tests (ID, nil data, no keys, has keys with field validation)
+- `AWSRootAccountMFADisabledRule` — 5 tests (ID, nil data, DataAvailable=false sentinel, MFA enabled, MFA disabled)
+- `AWSCloudTrailNotMultiRegionRule` — 4 tests (ID, nil data, multi-region trail exists, no trails)
+- `AWSGuardDutyDisabledRule` — 5 tests (ID, nil data, all enabled, one disabled, multiple disabled)
+- `AWSConfigDisabledRule` — 5 tests (ID, nil data, all enabled, one disabled, multiple disabled)
 - `AWSEBSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → HIGH, multiple)
 - `AWSRDSUnencryptedRule` — 5 tests (ID, nil data, encrypted → no finding, unencrypted → CRITICAL, multiple)
 - `AWSS3DefaultEncryptionMissingRule` — 5 tests (ID, nil data, enabled → no finding, missing → HIGH, multiple)
 - k8s `CollectClusterData` — 4 tests with fake clientset (2 nodes + 3 namespaces, node fields, namespace names, empty cluster)
 - `mergeFindings` — 12 tests (dedup, severity upgrade, savings sum, metadata merge, input immutability)
 - `computeSummary` — 5 tests (severity counts, INFO handling, savings total)
+- `aggregateCostSummaries` — 6 tests (nil, empty, single, sum across profiles, service breakdown merge, earliest/latest period)
 - `printSummary` — 6 tests + `topFindingsBySavings` — 5 tests + `writeReportToFile` — 3 tests
 - `runKubernetesInspect` — 2 tests (output fields, context flag forwarded to provider)
 
@@ -697,13 +710,18 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Cloud-stratified models: `internal/models/` split into `findings.go`, `aws.go`, `aws_security.go`, `kubernetes.go`
 - [x] AWS namespace hardening: `aws_` rule file prefix, `AWS` struct prefix, `aws_cost` / `aws_security` / `aws_dataprotection` rulepacks
 - [x] Domain-aware findings (`Domain` field on `Finding`)
-- [ ] Load Balancer idle detection (CloudWatch RequestCount)
-- [ ] EC2 on-demand without Savings Plan coverage
-- [ ] Coloured severity output (lipgloss)
-- [ ] Exit code 1 on CRITICAL/HIGH findings (separate from `--policy` enforcement)
+- [x] Load Balancer idle detection (CloudWatch RequestCount — ALB_IDLE rule)
+- [x] EC2 on-demand without Savings Plan coverage (EC2_NO_SAVINGS_PLAN rule)
+- [x] CloudTrail multi-region trail check (CLOUDTRAIL_NOT_MULTI_REGION rule)
+- [x] GuardDuty per-region enablement check (GUARDDUTY_DISABLED rule)
+- [x] AWS Config per-region enablement check (AWS_CONFIG_DISABLED rule)
+- [x] Root account MFA check (ROOT_ACCOUNT_MFA_DISABLED rule)
+- [x] Coloured severity output via `--color` flag (ANSI codes, CI-safe default)
+- [x] Exit code 1 on CRITICAL/HIGH findings (unconditional, independent of `--policy` enforcement)
+- [x] `--all-profiles` cost aggregation: TotalCostUSD and ServiceBreakdown correctly summed across profiles
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module
 - [ ] GCP provider module
 - [ ] SaaS backend with org-wide aggregation and scheduled audits
-- [ ] Binary releases via GoReleaser (CI pipeline)
+- [x] Binary releases via GoReleaser (CI pipeline + GitHub Actions)

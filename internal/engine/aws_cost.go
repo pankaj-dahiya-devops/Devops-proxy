@@ -112,11 +112,11 @@ func (e *AWSCostEngine) runAllProfiles(
 
 	sem := make(chan struct{}, maxConcurrentProfiles)
 	var (
-		mu              sync.Mutex
-		allFindings     []models.Finding
-		allRegions      []string
-		seenRegions     = make(map[string]struct{})
-		lastCostSummary *models.AWSCostSummary
+		mu               sync.Mutex
+		allFindings      []models.Finding
+		allRegions       []string
+		seenRegions      = make(map[string]struct{})
+		allCostSummaries []*models.AWSCostSummary
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -154,7 +154,7 @@ PROFILES:
 				}
 			}
 			if costSummary != nil {
-				lastCostSummary = costSummary
+				allCostSummaries = append(allCostSummaries, costSummary)
 			}
 			mu.Unlock()
 
@@ -166,7 +166,54 @@ PROFILES:
 		return nil, err
 	}
 
-	return buildReport("multi", "", allRegions, allFindings, lastCostSummary, e.policy), nil
+	return buildReport("multi", "", allRegions, allFindings, aggregateCostSummaries(allCostSummaries), e.policy), nil
+}
+
+// aggregateCostSummaries merges cost summaries from multiple AWS profiles into
+// a single summary. TotalCostUSD is summed; ServiceBreakdown entries are
+// accumulated by service name. PeriodStart takes the earliest date and PeriodEnd
+// takes the latest date across all summaries. Returns nil when the input is empty.
+func aggregateCostSummaries(summaries []*models.AWSCostSummary) *models.AWSCostSummary {
+	if len(summaries) == 0 {
+		return nil
+	}
+
+	result := &models.AWSCostSummary{
+		PeriodStart: summaries[0].PeriodStart,
+		PeriodEnd:   summaries[0].PeriodEnd,
+	}
+	svcTotals := make(map[string]float64)
+
+	for _, s := range summaries {
+		result.TotalCostUSD += s.TotalCostUSD
+
+		// Track the earliest PeriodStart and latest PeriodEnd across profiles.
+		if s.PeriodStart != "" && (result.PeriodStart == "" || s.PeriodStart < result.PeriodStart) {
+			result.PeriodStart = s.PeriodStart
+		}
+		if s.PeriodEnd != "" && s.PeriodEnd > result.PeriodEnd {
+			result.PeriodEnd = s.PeriodEnd
+		}
+
+		for _, svc := range s.ServiceBreakdown {
+			svcTotals[svc.Service] += svc.CostUSD
+		}
+	}
+
+	// Rebuild ServiceBreakdown in deterministic order.
+	services := make([]string, 0, len(svcTotals))
+	for svc := range svcTotals {
+		services = append(services, svc)
+	}
+	sort.Strings(services)
+	for _, svc := range services {
+		result.ServiceBreakdown = append(result.ServiceBreakdown, models.AWSServiceCost{
+			Service: svc,
+			CostUSD: svcTotals[svc],
+		})
+	}
+
+	return result
 }
 
 // resolveRegions returns the explicit region list when provided, otherwise

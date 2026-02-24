@@ -389,3 +389,111 @@ func TestComputeSummary_MultipleFindingsSameSeverity(t *testing.T) {
 		t.Errorf("TotalEstimatedMonthlySavings = %.2f; want 60.00", s.TotalEstimatedMonthlySavings)
 	}
 }
+
+// ── aggregateCostSummaries ───────────────────────────────────────────────────
+
+func TestAggregateCostSummaries_NilInput(t *testing.T) {
+	if got := aggregateCostSummaries(nil); got != nil {
+		t.Errorf("want nil for nil input, got %+v", got)
+	}
+}
+
+func TestAggregateCostSummaries_EmptySlice(t *testing.T) {
+	if got := aggregateCostSummaries([]*models.AWSCostSummary{}); got != nil {
+		t.Errorf("want nil for empty slice, got %+v", got)
+	}
+}
+
+func TestAggregateCostSummaries_SingleSummary(t *testing.T) {
+	input := []*models.AWSCostSummary{
+		{
+			PeriodStart:  "2026-01-01",
+			PeriodEnd:    "2026-02-01",
+			TotalCostUSD: 150.0,
+			ServiceBreakdown: []models.AWSServiceCost{
+				{Service: "EC2", CostUSD: 100.0},
+				{Service: "S3", CostUSD: 50.0},
+			},
+		},
+	}
+	got := aggregateCostSummaries(input)
+	if got == nil {
+		t.Fatal("want non-nil result for single summary")
+	}
+	if got.TotalCostUSD != 150.0 {
+		t.Errorf("TotalCostUSD = %.2f; want 150.00", got.TotalCostUSD)
+	}
+	if got.PeriodStart != "2026-01-01" {
+		t.Errorf("PeriodStart = %q; want 2026-01-01", got.PeriodStart)
+	}
+	if got.PeriodEnd != "2026-02-01" {
+		t.Errorf("PeriodEnd = %q; want 2026-02-01", got.PeriodEnd)
+	}
+	if len(got.ServiceBreakdown) != 2 {
+		t.Errorf("len(ServiceBreakdown) = %d; want 2", len(got.ServiceBreakdown))
+	}
+}
+
+func TestAggregateCostSummaries_SumsTotalCostAcrossProfiles(t *testing.T) {
+	input := []*models.AWSCostSummary{
+		{TotalCostUSD: 100.0, PeriodStart: "2026-01-01", PeriodEnd: "2026-02-01"},
+		{TotalCostUSD: 200.0, PeriodStart: "2026-01-01", PeriodEnd: "2026-02-01"},
+		{TotalCostUSD: 50.0, PeriodStart: "2026-01-01", PeriodEnd: "2026-02-01"},
+	}
+	got := aggregateCostSummaries(input)
+	if got.TotalCostUSD != 350.0 {
+		t.Errorf("TotalCostUSD = %.2f; want 350.00 (100+200+50)", got.TotalCostUSD)
+	}
+}
+
+func TestAggregateCostSummaries_MergesServiceBreakdownByName(t *testing.T) {
+	input := []*models.AWSCostSummary{
+		{
+			TotalCostUSD: 150.0,
+			ServiceBreakdown: []models.AWSServiceCost{
+				{Service: "EC2", CostUSD: 100.0},
+				{Service: "S3", CostUSD: 50.0},
+			},
+		},
+		{
+			TotalCostUSD: 80.0,
+			ServiceBreakdown: []models.AWSServiceCost{
+				{Service: "EC2", CostUSD: 60.0},
+				{Service: "RDS", CostUSD: 20.0},
+			},
+		},
+	}
+	got := aggregateCostSummaries(input)
+	if got.TotalCostUSD != 230.0 {
+		t.Errorf("TotalCostUSD = %.2f; want 230.00", got.TotalCostUSD)
+	}
+	// ServiceBreakdown should be sorted by service name: EC2, RDS, S3
+	svcMap := make(map[string]float64)
+	for _, sc := range got.ServiceBreakdown {
+		svcMap[sc.Service] = sc.CostUSD
+	}
+	if svcMap["EC2"] != 160.0 {
+		t.Errorf("EC2 cost = %.2f; want 160.00 (100+60)", svcMap["EC2"])
+	}
+	if svcMap["S3"] != 50.0 {
+		t.Errorf("S3 cost = %.2f; want 50.00", svcMap["S3"])
+	}
+	if svcMap["RDS"] != 20.0 {
+		t.Errorf("RDS cost = %.2f; want 20.00", svcMap["RDS"])
+	}
+}
+
+func TestAggregateCostSummaries_EarliestStartLatestEnd(t *testing.T) {
+	input := []*models.AWSCostSummary{
+		{PeriodStart: "2026-01-15", PeriodEnd: "2026-02-15"},
+		{PeriodStart: "2026-01-01", PeriodEnd: "2026-02-28"},
+		{PeriodStart: "2026-01-10", PeriodEnd: "2026-02-10"},
+	}
+	got := aggregateCostSummaries(input)
+	if got.PeriodStart != "2026-01-01" {
+		t.Errorf("PeriodStart = %q; want 2026-01-01 (earliest)", got.PeriodStart)
+	}
+	if got.PeriodEnd != "2026-02-28" {
+		t.Errorf("PeriodEnd = %q; want 2026-02-28 (latest)", got.PeriodEnd)
+	}
+}

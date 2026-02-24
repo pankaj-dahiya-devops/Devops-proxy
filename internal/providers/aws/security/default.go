@@ -8,8 +8,9 @@ import (
 )
 
 // DefaultSecurityCollector is the production SecurityCollector.
-// It collects S3, IAM, and root account data from us-east-1 (global AWS
-// services) and aggregates EC2 security group rules across all audited regions.
+// It collects S3, IAM, root account, and CloudTrail data from us-east-1
+// (global AWS services) and aggregates EC2 security group rules, GuardDuty
+// status, and AWS Config status across all audited regions.
 type DefaultSecurityCollector struct {
 	factory secClientFactory
 }
@@ -27,33 +28,47 @@ func NewDefaultSecurityCollectorWithFactory(f secClientFactory) *DefaultSecurity
 }
 
 // CollectAll gathers account-level security data for the given profile and
-// regions. Global resources (S3, IAM, root) are collected once using a
-// us-east-1 config. Security group rules are collected per region and
-// aggregated. All collection failures are silently skipped (non-fatal).
+// regions. Global resources (S3, IAM, root, CloudTrail) are collected once
+// using a us-east-1 config. Security group rules, GuardDuty detector status,
+// and AWS Config recorder status are collected per region and aggregated.
+// All collection failures are silently skipped (non-fatal).
 func (c *DefaultSecurityCollector) CollectAll(
 	ctx context.Context,
 	profile *common.ProfileConfig,
 	provider common.AWSClientProvider,
 	regions []string,
 ) (*models.AWSSecurityData, error) {
-	// Global clients: us-east-1 is the canonical region for S3 and IAM.
+	// Global clients: us-east-1 is the canonical region for S3, IAM, and CloudTrail.
 	globalCfg := provider.ConfigForRegion(profile, "us-east-1")
 	globalClients := c.factory(globalCfg)
 
 	buckets, _ := collectS3Buckets(ctx, globalClients.S3)
 	iamUsers, _ := collectIAMUsers(ctx, globalClients.IAM)
 	root, _ := collectRootAccountInfo(ctx, globalClients.IAM)
+	cloudTrail, _ := collectCloudTrailStatus(ctx, globalClients.CloudTrail)
 
-	// Regional: collect security group rules per region and aggregate.
+	// Regional: collect security groups, GuardDuty, and Config per region.
 	var allSGRules []models.AWSSecurityGroupRule
+	var allGuardDuty []models.AWSGuardDutyStatus
+	var allConfig []models.AWSConfigStatus
+
 	for _, region := range regions {
 		regCfg := provider.ConfigForRegion(profile, region)
 		regClients := c.factory(regCfg)
+
+		// Security groups — non-fatal: only skip SG data for this region on error.
 		sgRules, err := collectSecurityGroupRules(ctx, regClients.EC2, region)
-		if err != nil {
-			continue // non-fatal: skip region
+		if err == nil {
+			allSGRules = append(allSGRules, sgRules...)
 		}
-		allSGRules = append(allSGRules, sgRules...)
+
+		// GuardDuty detector status — non-fatal.
+		gdStatus, _ := collectGuardDutyStatus(ctx, regClients.GuardDuty, region)
+		allGuardDuty = append(allGuardDuty, gdStatus)
+
+		// AWS Config recorder status — non-fatal.
+		cfgStatus, _ := collectConfigStatus(ctx, regClients.Config, region)
+		allConfig = append(allConfig, cfgStatus)
 	}
 
 	return &models.AWSSecurityData{
@@ -61,5 +76,8 @@ func (c *DefaultSecurityCollector) CollectAll(
 		SecurityGroupRules: allSGRules,
 		IAMUsers:           iamUsers,
 		Root:               root,
+		CloudTrail:         cloudTrail,
+		GuardDuty:          allGuardDuty,
+		Config:             allConfig,
 	}, nil
 }

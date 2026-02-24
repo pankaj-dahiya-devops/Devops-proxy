@@ -192,7 +192,7 @@ func (d *DefaultCostCollector) CollectRegion(
 		}
 	}
 
-	rd.LoadBalancers, err = collectLoadBalancers(ctx, clients.ELB, opts.Region)
+	rd.LoadBalancers, err = collectLoadBalancers(ctx, clients.ELB, clients.CW, opts.Region, opts.DaysBack)
 	if err != nil {
 		return nil, fmt.Errorf("collect load balancers in %s: %w", opts.Region, err)
 	}

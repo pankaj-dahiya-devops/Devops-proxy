@@ -19,5 +19,7 @@ func New() []rules.Rule {
 		rules.AWSNATLowTrafficRule{},
 		rules.AWSSavingsPlanUnderutilizedRule{},
 		rules.AWSRDSLowCPURule{},
+		rules.AWSALBIdleRule{},
+		rules.AWSEC2NoSavingsPlanRule{},
 	}
 }

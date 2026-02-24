@@ -36,8 +36,8 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 ┌──────▼──────────┐   ┌──────────▼─────────────────────┐
 │  internal/       │   │  internal/                      │
 │  rulepacks/           │   │  providers/aws/                 │
-│  - aws_cost (6)       │   │  - cost/     CostCollector      │
-│  - aws_security (4)   │   │  - security/ SecurityCollector  │
+│  - aws_cost (8)       │   │  - cost/     CostCollector      │
+│  - aws_security (8)   │   │  - security/ SecurityCollector  │
 │  - aws_dataprotection │   │  - common/   AWSClientProvider  │
 │    (3)                │   │                                 │
 │  - kubernetes (6)     │   │                                 │
@@ -61,10 +61,10 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 
 | Command | Engine | Rules | Collectors |
 |---------|--------|-------|------------|
-| `dp aws audit cost` | AWSCostEngine | 6 | CostCollector (per-region EC2/EBS/NAT/RDS/ELB + Cost Explorer + SP coverage) |
-| `dp aws audit security` | AWSSecurityEngine | 4 | SecurityCollector (account-level IAM/root/S3/SGs) |
+| `dp aws audit cost` | AWSCostEngine | 8 | CostCollector (per-region EC2/EBS/NAT/RDS/ELB+CW + Cost Explorer + SP coverage) |
+| `dp aws audit security` | AWSSecurityEngine | 8 | SecurityCollector (IAM/root/S3/SGs + CloudTrail + per-region GuardDuty + Config) |
 | `dp aws audit dataprotection` | AWSDataProtectionEngine | 3 | CostCollector (EBS/RDS encrypted fields) + SecurityCollector (S3 encryption) |
-| `dp aws audit --all` | AllAWSDomainsEngine | 13 | All three domain engines; cross-domain merge + per-domain enforcement |
+| `dp aws audit --all` | AllAWSDomainsEngine | 19 | All three domain engines; cross-domain merge + per-domain enforcement |
 | `dp kubernetes audit` | KubernetesEngine | 6 | KubeClientProvider (nodes + namespaces + LimitRanges + pods) |
 | `dp kubernetes inspect` | — | — | KubeClientProvider (context, API server, nodes, namespaces) |
 
@@ -77,7 +77,8 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 
 **Profile-level** (inside `AWSCostEngine.runAllProfiles`):
 - `errgroup.WithContext` + semaphore channel (capacity 3)
-- One goroutine per profile; `sync.Mutex` protects shared findings/regions/costSummary
+- One goroutine per profile; `sync.Mutex` protects shared findings/regions/allCostSummaries
+- CostSummaries aggregated via `aggregateCostSummaries` (sum TotalCostUSD, merge ServiceBreakdown)
 - Fail-fast: first profile error cancels all remaining profiles
 - `buildReport` (merge → policy → sort) runs sequentially after all goroutines complete
 
@@ -115,21 +116,18 @@ Engine.RunAudit → *models.AuditReport
   ├── --output=<path>  → writeReportToFile (JSON)
   ├── --summary        → printSummary (severity breakdown + top findings)
   ├── --report=json    → printJSON (indented JSON to stdout)
-  └── default          → printTable / printSecurityTable / printDataProtectionTable
+  ├── --color          → ANSI severity coloring in table output (opt-in, CI-safe default)
+  └── default          → printTable / printSecurityTable / printDataProtectionTable (colored bool)
 ```
+
+Exit code 1 is returned unconditionally when any CRITICAL or HIGH finding exists, independent of `--policy` enforcement.
 
 ## Future Work
 
 - LLM summarization: findings → human-readable report (`internal/llm` stub ready)
-- Coloured severity output (lipgloss)
-- Exit code 1 when CRITICAL/HIGH findings exist (separate from `--policy` enforcement)
-- Load Balancer idle detection (CloudWatch RequestCount)
-- EC2 on-demand without Savings Plan coverage rule
-- ALB_IDLE and EC2_NO_SAVINGS_PLAN rules
 - Terraform plan analysis
 - Azure provider module
 - GCP provider module
 - SaaS backend with org-wide aggregation
 - Scheduled audits
 - Compliance scoring
-- Binary releases via GoReleaser CI pipeline
