@@ -54,10 +54,6 @@ func collectNodes(ctx context.Context, clientset k8sclient.Interface) ([]NodeInf
 
 	nodes := make([]NodeInfo, 0, len(nodeList.Items))
 	for _, n := range nodeList.Items {
-		labels := make(map[string]string, len(n.Labels))
-		for k, v := range n.Labels {
-			labels[k] = v
-		}
 		nodes = append(nodes, NodeInfo{
 			Name:                 n.Name,
 			CPUCapacity:          n.Status.Capacity.Cpu().String(),
@@ -66,8 +62,6 @@ func collectNodes(ctx context.Context, clientset k8sclient.Interface) ([]NodeInf
 			AllocatableMemory:    n.Status.Allocatable.Memory().String(),
 			CPUCapacityMillis:    n.Status.Capacity.Cpu().MilliValue(),
 			AllocatableCPUMillis: n.Status.Allocatable.Cpu().MilliValue(),
-			ProviderID:           n.Spec.ProviderID,
-			Labels:               labels,
 		})
 	}
 	return nodes, nil

@@ -30,14 +30,6 @@ type NodeInfo struct {
 
 	// AllocatableCPUMillis is AllocatableCPU expressed in millicores.
 	AllocatableCPUMillis int64
-
-	// ProviderID is the cloud-provider instance identifier from node.spec.providerID.
-	// Used to detect the cloud provider (EKS, GKE, AKS).
-	ProviderID string
-
-	// Labels is a copy of the node's label map; used for provider detection and
-	// EKS cluster/region extraction.
-	Labels map[string]string
 }
 
 // NamespaceInfo holds basic namespace metadata.

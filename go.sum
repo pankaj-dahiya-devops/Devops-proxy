@@ -34,8 +34,6 @@ github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.2 h1:GLNyMrPeF5Rm96RVzGI
 github.com/aws/aws-sdk-go-v2/service/costexplorer v1.63.2/go.mod h1:Er9VGaPQuVRK3T33JkY6yWJGKTSVrddaHbBoSYazIxI=
 github.com/aws/aws-sdk-go-v2/service/ec2 v1.290.0 h1:Ub4CvLWf8wEQ7/pEiqXM9tTsHXf2BokPLwbqEvrmAq0=
 github.com/aws/aws-sdk-go-v2/service/ec2 v1.290.0/go.mod h1:Uy+C+Sc58jozdoL1McQr8bDsEvNFx+/nBY+vpO1HVUY=
-github.com/aws/aws-sdk-go-v2/service/eks v1.80.1 h1:Aivj88+23MYkW/B507eqsnLHTMmj4A/Us2AxKz+PDkM=
-github.com/aws/aws-sdk-go-v2/service/eks v1.80.1/go.mod h1:p30UgulgoiPvwWGGfVeiaCbOzD1PTObBVYn6MmCPHVg=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.54.6 h1:fQR1aeZKaiPkNPya0JMy2nhsoqoSgIWc3/QTiTiL1K0=
 github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2 v1.54.6/go.mod h1:oJRLDix51wqBDlP9dv+blFkvvf7HESolQz5cdhdmV4A=
 github.com/aws/aws-sdk-go-v2/service/guardduty v1.73.1 h1:1Zp+XmEgiPfs0IbzXzAnx071KoNmlsDnc5qgIXA2iDM=

@@ -29,7 +29,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/cloudtrail v1.55.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/configservice v1.61.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/eks v1.80.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/guardduty v1.73.1 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.9.8 // indirect
