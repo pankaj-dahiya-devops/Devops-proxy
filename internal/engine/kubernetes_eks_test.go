@@ -457,6 +457,7 @@ func TestKubernetesEngine_NonEKS_EKSRulesNotEvaluated(t *testing.T) {
 
 // ── Phase 5A engine integration tests ────────────────────────────────────────
 
+
 // TestKubernetesEngine_EKS_EncryptionDisabled_IsCritical verifies that
 // EKS_ENCRYPTION_DISABLED produces a CRITICAL severity finding.
 func TestKubernetesEngine_EKS_EncryptionDisabled_IsCritical(t *testing.T) {
@@ -558,5 +559,228 @@ func TestKubernetesEngine_EKS_PartialLogging_Fires(t *testing.T) {
 	}
 	if allRuleIDs["EKS_ENCRYPTION_DISABLED"] {
 		t.Error("EKS_ENCRYPTION_DISABLED should not fire (encryption is enabled)")
+	}
+}
+
+// ── Phase 5B engine integration tests ────────────────────────────────────────
+
+// allRuleIDsFromReport collects every rule ID across all findings (including
+// merged-rule metadata) and returns them as a map for quick membership checks.
+func allRuleIDsFromReport(findings []models.Finding) map[string]bool {
+	out := make(map[string]bool)
+	for _, f := range findings {
+		out[f.RuleID] = true
+		if raw, ok := f.Metadata["rules"]; ok {
+			if ruleList, ok := raw.([]string); ok {
+				for _, id := range ruleList {
+					out[id] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestKubernetesEngine_EKS5B_OIDCNotAssociated_Fires verifies that
+// EKS_OIDC_PROVIDER_NOT_ASSOCIATED fires when OIDCProviderARN is empty.
+func TestKubernetesEngine_EKS5B_OIDCNotAssociated_Fires(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "no-oidc-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "", // fires EKS_OIDC_PROVIDER_NOT_ASSOCIATED
+		NodeRolePolicies:     nil,
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-no-oidc"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ids := allRuleIDsFromReport(report.Findings)
+	if !ids["EKS_OIDC_PROVIDER_NOT_ASSOCIATED"] {
+		t.Error("expected EKS_OIDC_PROVIDER_NOT_ASSOCIATED finding when OIDCProviderARN is empty")
+	}
+}
+
+// TestKubernetesEngine_EKS5B_OIDCNotAssociated_Silent verifies that
+// EKS_OIDC_PROVIDER_NOT_ASSOCIATED is silent when the OIDC provider ARN is set.
+func TestKubernetesEngine_EKS5B_OIDCNotAssociated_Silent(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "oidc-ok-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     nil,
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-oidc-ok"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ids := allRuleIDsFromReport(report.Findings)
+	if ids["EKS_OIDC_PROVIDER_NOT_ASSOCIATED"] {
+		t.Error("EKS_OIDC_PROVIDER_NOT_ASSOCIATED should not fire when OIDCProviderARN is set")
+	}
+}
+
+// TestKubernetesEngine_EKS5B_NodeRoleOverpermissive_IsCritical verifies that
+// EKS_NODE_ROLE_OVERPERMISSIVE fires with CRITICAL severity.
+func TestKubernetesEngine_EKS5B_NodeRoleOverpermissive_IsCritical(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "overperm-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     []string{"AdministratorAccess"}, // fires EKS_NODE_ROLE_OVERPERMISSIVE
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-overperm"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ids := allRuleIDsFromReport(report.Findings)
+	if !ids["EKS_NODE_ROLE_OVERPERMISSIVE"] {
+		t.Fatal("expected EKS_NODE_ROLE_OVERPERMISSIVE finding; not found")
+	}
+	// Verify the merged finding is at least CRITICAL.
+	for _, f := range report.Findings {
+		rids := ruleIDsForFinding(&f)
+		hasRule := false
+		for _, rid := range rids {
+			if rid == "EKS_NODE_ROLE_OVERPERMISSIVE" {
+				hasRule = true
+			}
+		}
+		if hasRule && f.Severity != models.SeverityCritical {
+			t.Errorf("EKS_NODE_ROLE_OVERPERMISSIVE finding severity = %q; want CRITICAL", f.Severity)
+		}
+	}
+}
+
+// TestKubernetesEngine_EKS5B_ServiceAccountNoIRSA_Fires verifies that
+// EKS_SERVICEACCOUNT_NO_IRSA fires for a SA without the annotation.
+func TestKubernetesEngine_EKS5B_ServiceAccountNoIRSA_Fires(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "irsa-test-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     nil,
+	}
+
+	// SA without IRSA annotation — should fire the rule.
+	noIRSASA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "no-irsa-sa",
+			Namespace:   "prod",
+			Annotations: nil,
+		},
+	}
+
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		noIRSASA,
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-irsa-test"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ids := allRuleIDsFromReport(report.Findings)
+	if !ids["EKS_SERVICEACCOUNT_NO_IRSA"] {
+		t.Error("expected EKS_SERVICEACCOUNT_NO_IRSA finding for SA with no IRSA annotation")
+	}
+}
+
+// TestKubernetesEngine_EKS5B_ServiceAccountNoIRSA_SilentWhenAnnotated verifies
+// that EKS_SERVICEACCOUNT_NO_IRSA is silent when all SAs have the annotation.
+func TestKubernetesEngine_EKS5B_ServiceAccountNoIRSA_SilentWhenAnnotated(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "irsa-ok-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     nil,
+	}
+
+	// SA with IRSA annotation — should not fire.
+	irsaSA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "irsa-sa",
+			Namespace: "prod",
+			Annotations: map[string]string{
+				"eks.amazonaws.com/role-arn": "arn:aws:iam::123456789012:role/prod-role",
+			},
+		},
+	}
+
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		irsaSA,
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-irsa-ok"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	ids := allRuleIDsFromReport(report.Findings)
+	if ids["EKS_SERVICEACCOUNT_NO_IRSA"] {
+		t.Error("EKS_SERVICEACCOUNT_NO_IRSA should not fire when all SAs have IRSA annotation")
 	}
 }

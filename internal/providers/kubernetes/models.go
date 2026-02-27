@@ -64,6 +64,10 @@ type ServiceAccountInfo struct {
 	// AutomountServiceAccountToken reflects the automountServiceAccountToken
 	// field. Nil means not set (Kubernetes defaults to true).
 	AutomountServiceAccountToken *bool
+
+	// Annotations is a copy of the ServiceAccount's annotation map.
+	// Used to check for the IRSA annotation (eks.amazonaws.com/role-arn).
+	Annotations map[string]string
 }
 
 // ContainerInfo holds per-container security and resource request data.

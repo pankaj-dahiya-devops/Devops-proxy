@@ -372,10 +372,15 @@ func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
 		})
 	}
 	for _, sa := range data.ServiceAccounts {
+		saAnnotations := make(map[string]string, len(sa.Annotations))
+		for key, val := range sa.Annotations {
+			saAnnotations[key] = val
+		}
 		k.ServiceAccounts = append(k.ServiceAccounts, models.KubernetesServiceAccountData{
 			Name:                         sa.Name,
 			Namespace:                    sa.Namespace,
 			AutomountServiceAccountToken: sa.AutomountServiceAccountToken,
+			Annotations:                  saAnnotations,
 		})
 	}
 	return k
