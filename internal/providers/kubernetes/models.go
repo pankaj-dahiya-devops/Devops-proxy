@@ -47,6 +47,23 @@ type NamespaceInfo struct {
 	// HasLimitRange is true when at least one LimitRange object exists in
 	// this namespace, indicating default resource limits are configured.
 	HasLimitRange bool
+
+	// Labels is a copy of the namespace's label map, used for Pod Security
+	// Admission enforcement checks.
+	Labels map[string]string
+}
+
+// ServiceAccountInfo holds basic ServiceAccount metadata.
+type ServiceAccountInfo struct {
+	// Name is the ServiceAccount name.
+	Name string
+
+	// Namespace is the Kubernetes namespace that owns this ServiceAccount.
+	Namespace string
+
+	// AutomountServiceAccountToken reflects the automountServiceAccountToken
+	// field. Nil means not set (Kubernetes defaults to true).
+	AutomountServiceAccountToken *bool
 }
 
 // ContainerInfo holds per-container security and resource request data.
@@ -62,6 +79,23 @@ type ContainerInfo struct {
 
 	// HasMemoryRequest is true when the container declares a non-zero memory resource request.
 	HasMemoryRequest bool
+
+	// RunAsNonRoot is the effective runAsNonRoot flag (container-level overrides pod-level).
+	// Nil means not configured.
+	RunAsNonRoot *bool
+
+	// RunAsUser is the effective UID (container-level overrides pod-level).
+	// Nil means not configured.
+	RunAsUser *int64
+
+	// AddedCapabilities lists the Linux capabilities added via
+	// securityContext.capabilities.add.
+	AddedCapabilities []string
+
+	// SeccompProfileType is the effective seccomp profile type (container-level
+	// overrides pod-level). Values: "RuntimeDefault", "Localhost", "Unconfined",
+	// or "" when not set.
+	SeccompProfileType string
 }
 
 // PodInfo holds basic pod metadata and its container list.
@@ -71,6 +105,19 @@ type PodInfo struct {
 
 	// Namespace is the Kubernetes namespace that owns this pod.
 	Namespace string
+
+	// HostNetwork is true when spec.hostNetwork == true.
+	HostNetwork bool
+
+	// HostPID is true when spec.hostPID == true.
+	HostPID bool
+
+	// HostIPC is true when spec.hostIPC == true.
+	HostIPC bool
+
+	// ServiceAccountName is the service account the pod runs as
+	// (spec.serviceAccountName).
+	ServiceAccountName string
 
 	// Containers holds per-container security and resource data.
 	Containers []ContainerInfo
@@ -94,9 +141,10 @@ type ServiceInfo struct {
 // ClusterData is the inventory collected from a single Kubernetes cluster.
 // It is the k8s equivalent of models.AWSRegionData and is the input to k8s rules.
 type ClusterData struct {
-	ClusterInfo ClusterInfo
-	Nodes       []NodeInfo
-	Namespaces  []NamespaceInfo
-	Pods        []PodInfo
-	Services    []ServiceInfo
+	ClusterInfo     ClusterInfo
+	Nodes           []NodeInfo
+	Namespaces      []NamespaceInfo
+	Pods            []PodInfo
+	Services        []ServiceInfo
+	ServiceAccounts []ServiceAccountInfo
 }

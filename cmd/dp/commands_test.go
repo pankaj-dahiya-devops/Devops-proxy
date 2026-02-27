@@ -341,6 +341,34 @@ func TestRunKubernetesInspect_Output(t *testing.T) {
 	}
 }
 
+// ── newKubernetesAuditCmd flags ───────────────────────────────────────────────
+
+// TestKubernetesAuditCmd_ExcludeSystemFlag_Registered verifies that the
+// --exclude-system flag is declared on the kubernetes audit command with the
+// correct default value (false).
+func TestKubernetesAuditCmd_ExcludeSystemFlag_Registered(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("exclude-system")
+	if flag == nil {
+		t.Fatal("--exclude-system flag not registered on kubernetes audit command")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--exclude-system default = %q; want false", flag.DefValue)
+	}
+}
+
+// TestKubernetesAuditCmd_ExcludeSystemFlag_Type verifies the flag is a bool.
+func TestKubernetesAuditCmd_ExcludeSystemFlag_Type(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("exclude-system")
+	if flag == nil {
+		t.Fatal("--exclude-system flag not registered")
+	}
+	if flag.Value.Type() != "bool" {
+		t.Errorf("--exclude-system flag type = %q; want bool", flag.Value.Type())
+	}
+}
+
 // TestRunKubernetesInspect_ContextForwarded verifies that the --context flag
 // value is passed through to the KubeClientProvider unchanged.
 func TestRunKubernetesInspect_ContextForwarded(t *testing.T) {
@@ -356,5 +384,422 @@ func TestRunKubernetesInspect_ContextForwarded(t *testing.T) {
 
 	if provider.calledWithCtx != "my-context" {
 		t.Errorf("provider called with context %q; want my-context", provider.calledWithCtx)
+	}
+}
+
+// ── renderKubernetesAuditOutput ───────────────────────────────────────────────
+
+// TestRenderKubernetesAuditOutput_JSONMode_PureJSON verifies that in JSON mode
+// stdout begins with '{' and does not contain any banner lines.
+func TestRenderKubernetesAuditOutput_JSONMode_PureJSON(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ResourceID: "pod-1", Severity: models.SeverityCritical},
+	})
+	report.Profile = "my-cluster"
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON output must start with '{'; got: %.40s", out)
+	}
+	for _, banned := range []string{"Context:", "Profile:", "Findings:"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("JSON output must not contain %q; got non-empty match", banned)
+		}
+	}
+}
+
+// TestRenderKubernetesAuditOutput_JSONMode_SummaryIgnored verifies that JSON
+// mode takes priority over --summary: output must still be pure JSON.
+func TestRenderKubernetesAuditOutput_JSONMode_SummaryIgnored(t *testing.T) {
+	report := makeReport(nil)
+	report.Profile = "my-cluster"
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "json", true, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON mode with summary=true must still start with '{'; got: %.40s", out)
+	}
+	for _, banned := range []string{"Context:", "Profile:", "Findings:", "CRITICAL", "Severity"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("JSON output must not contain human-readable banner %q", banned)
+		}
+	}
+}
+
+// TestRenderKubernetesAuditOutput_JSONMode_IsValidJSON verifies the output
+// parses cleanly as an AuditReport.
+func TestRenderKubernetesAuditOutput_JSONMode_IsValidJSON(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ResourceID: "pod-1", Severity: models.SeverityHigh},
+	})
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got models.AuditReport
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\ngot:\n%s", err, buf.String())
+	}
+}
+
+// TestRenderKubernetesAuditOutput_TableMode_ContextPresent verifies that in
+// table mode the "Context:" banner is written to the output.
+func TestRenderKubernetesAuditOutput_TableMode_ContextPresent(t *testing.T) {
+	report := makeReport(nil)
+	report.Profile = "prod-cluster"
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Context:") {
+		t.Errorf("table output must contain 'Context:'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "prod-cluster") {
+		t.Errorf("table output must contain cluster name; got:\n%s", out)
+	}
+}
+
+// ── renderAWSCostOutput ───────────────────────────────────────────────────────
+
+// TestRenderAWSCostOutput_JSONMode_PureJSON verifies that JSON mode produces
+// no banner lines — only the JSON payload.
+func TestRenderAWSCostOutput_JSONMode_PureJSON(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ResourceID: "vol-1", Region: "us-east-1", Severity: models.SeverityHigh},
+	})
+
+	var buf bytes.Buffer
+	if err := renderAWSCostOutput(&buf, report, "json", false, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON output must start with '{'; got: %.40s", out)
+	}
+	for _, banned := range []string{"Profile:", "Findings:", "Savings"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("JSON output must not contain banner text %q", banned)
+		}
+	}
+}
+
+// TestRenderAWSCostOutput_JSONMode_SummaryIgnored verifies that JSON mode takes
+// priority when --summary is also set.
+func TestRenderAWSCostOutput_JSONMode_SummaryIgnored(t *testing.T) {
+	report := makeReport(nil)
+
+	var buf bytes.Buffer
+	if err := renderAWSCostOutput(&buf, report, "json", true, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON mode with summary=true must still start with '{'; got: %.40s", out)
+	}
+}
+
+// TestRenderAWSCostOutput_JSONMode_IsValidJSON verifies the output is parseable.
+func TestRenderAWSCostOutput_JSONMode_IsValidJSON(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ResourceID: "vol-1", Region: "us-east-1", Severity: models.SeverityMedium, EstimatedMonthlySavings: 8.0},
+	})
+
+	var buf bytes.Buffer
+	if err := renderAWSCostOutput(&buf, report, "json", false, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var got models.AuditReport
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\ngot:\n%s", err, buf.String())
+	}
+	if len(got.Findings) != 1 || got.Findings[0].ResourceID != "vol-1" {
+		t.Errorf("findings not preserved in JSON; got: %+v", got.Findings)
+	}
+}
+
+// TestRenderAWSCostOutput_TableMode_ProfilePresent verifies that in table mode
+// the "Profile:" banner is written to the output.
+func TestRenderAWSCostOutput_TableMode_ProfilePresent(t *testing.T) {
+	report := makeReport(nil)
+	// report.Profile is set by makeReport to "staging"
+
+	var buf bytes.Buffer
+	if err := renderAWSCostOutput(&buf, report, "table", false, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Profile:") {
+		t.Errorf("table output must contain 'Profile:'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "staging") {
+		t.Errorf("table output must contain profile name; got:\n%s", out)
+	}
+}
+
+// ── renderAWSSecurityOutput ───────────────────────────────────────────────────
+
+// TestRenderAWSSecurityOutput_JSONMode_PureJSON verifies that JSON mode for
+// the security command produces no banner text.
+func TestRenderAWSSecurityOutput_JSONMode_PureJSON(t *testing.T) {
+	report := makeReport(nil)
+
+	var buf bytes.Buffer
+	if err := renderAWSSecurityOutput(&buf, report, "json", false, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON output must start with '{'; got: %.40s", out)
+	}
+	for _, banned := range []string{"Profile:", "Findings:"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("JSON output must not contain banner text %q", banned)
+		}
+	}
+}
+
+// TestRenderAWSSecurityOutput_JSONMode_SummaryIgnored verifies JSON takes priority.
+func TestRenderAWSSecurityOutput_JSONMode_SummaryIgnored(t *testing.T) {
+	report := makeReport(nil)
+
+	var buf bytes.Buffer
+	if err := renderAWSSecurityOutput(&buf, report, "json", true, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(buf.String()), "{") {
+		t.Errorf("JSON mode with summary=true must still start with '{'")
+	}
+}
+
+// ── renderAWSDataProtectionOutput ────────────────────────────────────────────
+
+// TestRenderAWSDataProtectionOutput_JSONMode_PureJSON verifies that JSON mode
+// for the data-protection command produces no banner text.
+func TestRenderAWSDataProtectionOutput_JSONMode_PureJSON(t *testing.T) {
+	report := makeReport(nil)
+
+	var buf bytes.Buffer
+	if err := renderAWSDataProtectionOutput(&buf, report, "json", false, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.HasPrefix(strings.TrimSpace(out), "{") {
+		t.Errorf("JSON output must start with '{'; got: %.40s", out)
+	}
+	for _, banned := range []string{"Profile:", "Findings:"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("JSON output must not contain banner text %q", banned)
+		}
+	}
+}
+
+// TestRenderAWSDataProtectionOutput_JSONMode_SummaryIgnored verifies JSON priority.
+func TestRenderAWSDataProtectionOutput_JSONMode_SummaryIgnored(t *testing.T) {
+	report := makeReport(nil)
+
+	var buf bytes.Buffer
+	if err := renderAWSDataProtectionOutput(&buf, report, "json", true, false, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(strings.TrimSpace(buf.String()), "{") {
+		t.Errorf("JSON mode with summary=true must still start with '{'")
+	}
+}
+
+// ── hasCriticalOrHighFindings ─────────────────────────────────────────────────
+
+// TestHasCriticalOrHighFindings_NilFindings verifies that nil input returns false.
+func TestHasCriticalOrHighFindings_NilFindings(t *testing.T) {
+	if hasCriticalOrHighFindings(nil) {
+		t.Error("hasCriticalOrHighFindings(nil) = true; want false")
+	}
+}
+
+// TestHasCriticalOrHighFindings_EmptySlice verifies that an empty slice returns false.
+func TestHasCriticalOrHighFindings_EmptySlice(t *testing.T) {
+	if hasCriticalOrHighFindings([]models.Finding{}) {
+		t.Error("hasCriticalOrHighFindings([]) = true; want false")
+	}
+}
+
+// TestHasCriticalOrHighFindings_OnlyLowMedium verifies that only LOW/MEDIUM
+// findings return false (exit code 0 — no alert).
+func TestHasCriticalOrHighFindings_OnlyLowMedium(t *testing.T) {
+	findings := []models.Finding{
+		{ResourceID: "r-1", Severity: models.SeverityLow},
+		{ResourceID: "r-2", Severity: models.SeverityMedium},
+	}
+	if hasCriticalOrHighFindings(findings) {
+		t.Error("hasCriticalOrHighFindings(LOW+MEDIUM only) = true; want false")
+	}
+}
+
+// TestHasCriticalOrHighFindings_CriticalPresent verifies that a CRITICAL finding
+// returns true — the exit-code-1 path must trigger.
+func TestHasCriticalOrHighFindings_CriticalPresent(t *testing.T) {
+	findings := []models.Finding{
+		{ResourceID: "r-1", Severity: models.SeverityMedium},
+		{ResourceID: "r-2", Severity: models.SeverityCritical},
+	}
+	if !hasCriticalOrHighFindings(findings) {
+		t.Error("hasCriticalOrHighFindings with CRITICAL = false; want true")
+	}
+}
+
+// TestHasCriticalOrHighFindings_HighPresent verifies that a HIGH finding
+// returns true — the exit-code-1 path must trigger.
+func TestHasCriticalOrHighFindings_HighPresent(t *testing.T) {
+	findings := []models.Finding{
+		{ResourceID: "r-1", Severity: models.SeverityLow},
+		{ResourceID: "r-2", Severity: models.SeverityHigh},
+	}
+	if !hasCriticalOrHighFindings(findings) {
+		t.Error("hasCriticalOrHighFindings with HIGH = false; want true")
+	}
+}
+
+// ── --output / --file flag registration ──────────────────────────────────────
+// These tests verify that every audit command declares --output (format, default
+// "table") and --file (file path, default "") flags consistently.
+
+// TestCostCmd_OutputFlagRegistered verifies --output flag on dp aws audit cost.
+func TestCostCmd_OutputFlagRegistered(t *testing.T) {
+	cmd := newCostCmd()
+	flag := cmd.Flags().Lookup("output")
+	if flag == nil {
+		t.Fatal("--output flag not registered on cost command")
+	}
+	if flag.DefValue != "table" {
+		t.Errorf("--output default = %q; want table", flag.DefValue)
+	}
+}
+
+// TestCostCmd_FileFlagRegistered verifies --file flag on dp aws audit cost.
+func TestCostCmd_FileFlagRegistered(t *testing.T) {
+	cmd := newCostCmd()
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil {
+		t.Fatal("--file flag not registered on cost command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--file default = %q; want empty string", flag.DefValue)
+	}
+}
+
+// TestSecurityCmd_OutputFlagRegistered verifies --output flag on dp aws audit security.
+func TestSecurityCmd_OutputFlagRegistered(t *testing.T) {
+	cmd := newSecurityCmd()
+	flag := cmd.Flags().Lookup("output")
+	if flag == nil {
+		t.Fatal("--output flag not registered on security command")
+	}
+	if flag.DefValue != "table" {
+		t.Errorf("--output default = %q; want table", flag.DefValue)
+	}
+}
+
+// TestSecurityCmd_FileFlagRegistered verifies --file flag on dp aws audit security.
+func TestSecurityCmd_FileFlagRegistered(t *testing.T) {
+	cmd := newSecurityCmd()
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil {
+		t.Fatal("--file flag not registered on security command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--file default = %q; want empty string", flag.DefValue)
+	}
+}
+
+// TestDataProtectionCmd_OutputFlagRegistered verifies --output flag on dp aws audit dataprotection.
+func TestDataProtectionCmd_OutputFlagRegistered(t *testing.T) {
+	cmd := newDataProtectionCmd()
+	flag := cmd.Flags().Lookup("output")
+	if flag == nil {
+		t.Fatal("--output flag not registered on dataprotection command")
+	}
+	if flag.DefValue != "table" {
+		t.Errorf("--output default = %q; want table", flag.DefValue)
+	}
+}
+
+// TestDataProtectionCmd_FileFlagRegistered verifies --file flag on dp aws audit dataprotection.
+func TestDataProtectionCmd_FileFlagRegistered(t *testing.T) {
+	cmd := newDataProtectionCmd()
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil {
+		t.Fatal("--file flag not registered on dataprotection command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--file default = %q; want empty string", flag.DefValue)
+	}
+}
+
+// TestKubernetesAuditCmd_OutputFlagRegistered verifies --output flag on dp kubernetes audit.
+func TestKubernetesAuditCmd_OutputFlagRegistered(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("output")
+	if flag == nil {
+		t.Fatal("--output flag not registered on kubernetes audit command")
+	}
+	if flag.DefValue != "table" {
+		t.Errorf("--output default = %q; want table", flag.DefValue)
+	}
+}
+
+// TestKubernetesAuditCmd_FileFlagRegistered verifies --file flag on dp kubernetes audit.
+func TestKubernetesAuditCmd_FileFlagRegistered(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil {
+		t.Fatal("--file flag not registered on kubernetes audit command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--file default = %q; want empty string", flag.DefValue)
+	}
+}
+
+// TestAuditAllCmd_OutputFlagRegistered verifies --output flag on dp aws audit --all.
+func TestAuditAllCmd_OutputFlagRegistered(t *testing.T) {
+	cmd := newAuditCmd()
+	flag := cmd.Flags().Lookup("output")
+	if flag == nil {
+		t.Fatal("--output flag not registered on aws audit command")
+	}
+	if flag.DefValue != "table" {
+		t.Errorf("--output default = %q; want table", flag.DefValue)
+	}
+}
+
+// TestAuditAllCmd_FileFlagRegistered verifies --file flag on dp aws audit --all.
+func TestAuditAllCmd_FileFlagRegistered(t *testing.T) {
+	cmd := newAuditCmd()
+	flag := cmd.Flags().Lookup("file")
+	if flag == nil {
+		t.Fatal("--file flag not registered on aws audit command")
+	}
+	if flag.DefValue != "" {
+		t.Errorf("--file default = %q; want empty string", flag.DefValue)
 	}
 }

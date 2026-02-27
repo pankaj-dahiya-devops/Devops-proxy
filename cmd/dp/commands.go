@@ -68,9 +68,9 @@ func newAuditCmd() *cobra.Command {
 		allProfiles bool
 		regions     []string
 		days        int
-		reportFmt   string
+		outputFmt   string
 		summary     bool
-		output      string
+		filePath    string
 		policyPath  string
 		color       bool
 	)
@@ -86,7 +86,7 @@ func newAuditCmd() *cobra.Command {
 			return runAllDomainsAudit(
 				cmd.Context(),
 				profile, allProfiles, regions, days,
-				reportFmt, summary, output, policyPath, color,
+				outputFmt, summary, filePath, policyPath, color,
 				cmd.OutOrStdout(),
 			)
 		},
@@ -101,9 +101,9 @@ func newAuditCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
 	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
 	cmd.Flags().IntVar(&days, "days", 30, "Lookback window in days for cost queries")
-	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().StringVar(&outputFmt, "output", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
-	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
@@ -120,9 +120,9 @@ func runAllDomainsAudit(
 	allProfiles bool,
 	regions []string,
 	days int,
-	reportFmt string,
+	outputFmt string,
 	summary bool,
-	output string,
+	filePath string,
 	policyPath string,
 	colored bool,
 	w io.Writer,
@@ -167,20 +167,18 @@ func runAllDomainsAudit(
 		return fmt.Errorf("all-domain audit failed: %w", err)
 	}
 
-	if output != "" {
-		if err := writeReportToFile(output, report); err != nil {
+	if filePath != "" {
+		if err := writeReportToFile(filePath, report); err != nil {
 			return err
 		}
 	}
 
-	if summary {
-		printSummary(w, report)
-	} else if reportFmt == "json" {
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(report); err != nil {
+	if outputFmt == "json" {
+		if err := encodeJSON(w, report); err != nil {
 			return fmt.Errorf("encode report: %w", err)
 		}
+	} else if summary {
+		printSummary(w, report)
 	} else {
 		s := report.Summary
 		fmt.Fprintf(w, "Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
@@ -202,7 +200,9 @@ func runAllDomainsAudit(
 			strings.Join(enforcedDomains, ", "))
 	}
 	if hasCriticalOrHighFindings(report.Findings) {
-		fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+		if outputFmt != "json" {
+			fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+		}
 		os.Exit(1)
 	}
 	return nil
@@ -227,9 +227,9 @@ func newCostCmd() *cobra.Command {
 		allProfiles bool
 		regions     []string
 		days        int
-		reportFmt   string
+		outputFmt   string
 		summary     bool
-		output      string
+		filePath    string
 		policyPath  string
 		color       bool
 	)
@@ -260,7 +260,7 @@ func newCostCmd() *cobra.Command {
 				AllProfiles:  allProfiles,
 				Regions:      regions,
 				DaysBack:     days,
-				ReportFormat: engine.ReportFormat(reportFmt),
+				ReportFormat: engine.ReportFormat(outputFmt),
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -268,39 +268,23 @@ func newCostCmd() *cobra.Command {
 				return fmt.Errorf("audit failed: %w", err)
 			}
 
-			if output != "" {
-				if err := writeReportToFile(output, report); err != nil {
+			if filePath != "" {
+				if err := writeReportToFile(filePath, report); err != nil {
 					return err
 				}
 			}
 
-			if summary {
-				printSummary(os.Stdout, report)
-			} else if reportFmt == "json" {
-				if err := printJSON(report); err != nil {
-					return err
-				}
-			} else {
-				s := report.Summary
-				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
-					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings, s.TotalEstimatedMonthlySavings)
-				if len(report.Findings) > 0 {
-					fmt.Println()
-				}
-				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
-					Colored:        color,
-					IncludeSavings: true,
-					IncludeDomain:  false,
-					IncludeProfile: allProfiles,
-					LocationLabel:  "REGION",
-				})
+			if err := renderAWSCostOutput(os.Stdout, report, outputFmt, summary, color, allProfiles); err != nil {
+				return err
 			}
 
 			if policy.ShouldFail("cost", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
 			if hasCriticalOrHighFindings(report.Findings) {
-				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				if outputFmt != "json" {
+					fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				}
 				os.Exit(1)
 			}
 			return nil
@@ -311,9 +295,9 @@ func newCostCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
 	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
 	cmd.Flags().IntVar(&days, "days", 30, "Lookback window in days for cost and metric queries")
-	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().StringVar(&outputFmt, "output", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings by savings")
-	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
@@ -325,9 +309,9 @@ func newSecurityCmd() *cobra.Command {
 		profile     string
 		allProfiles bool
 		regions     []string
-		reportFmt   string
+		outputFmt   string
 		summary     bool
-		output      string
+		filePath    string
 		policyPath  string
 		color       bool
 	)
@@ -357,7 +341,7 @@ func newSecurityCmd() *cobra.Command {
 				Profile:      profile,
 				AllProfiles:  allProfiles,
 				Regions:      regions,
-				ReportFormat: engine.ReportFormat(reportFmt),
+				ReportFormat: engine.ReportFormat(outputFmt),
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -365,39 +349,23 @@ func newSecurityCmd() *cobra.Command {
 				return fmt.Errorf("security audit failed: %w", err)
 			}
 
-			if output != "" {
-				if err := writeReportToFile(output, report); err != nil {
+			if filePath != "" {
+				if err := writeReportToFile(filePath, report); err != nil {
 					return err
 				}
 			}
 
-			if summary {
-				printSummary(os.Stdout, report)
-			} else if reportFmt == "json" {
-				if err := printJSON(report); err != nil {
-					return err
-				}
-			} else {
-				s := report.Summary
-				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
-					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
-				if len(report.Findings) > 0 {
-					fmt.Println()
-				}
-				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
-					Colored:        color,
-					IncludeSavings: false,
-					IncludeDomain:  false,
-					IncludeProfile: allProfiles,
-					LocationLabel:  "REGION",
-				})
+			if err := renderAWSSecurityOutput(os.Stdout, report, outputFmt, summary, color, allProfiles); err != nil {
+				return err
 			}
 
 			if policy.ShouldFail("security", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
 			if hasCriticalOrHighFindings(report.Findings) {
-				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				if outputFmt != "json" {
+					fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				}
 				os.Exit(1)
 			}
 			return nil
@@ -407,9 +375,9 @@ func newSecurityCmd() *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "AWS profile name (default: uses environment / default profile)")
 	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
 	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
-	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().StringVar(&outputFmt, "output", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
-	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
@@ -421,9 +389,9 @@ func newDataProtectionCmd() *cobra.Command {
 		profile     string
 		allProfiles bool
 		regions     []string
-		reportFmt   string
+		outputFmt   string
 		summary     bool
-		output      string
+		filePath    string
 		policyPath  string
 		color       bool
 	)
@@ -454,7 +422,7 @@ func newDataProtectionCmd() *cobra.Command {
 				Profile:      profile,
 				AllProfiles:  allProfiles,
 				Regions:      regions,
-				ReportFormat: engine.ReportFormat(reportFmt),
+				ReportFormat: engine.ReportFormat(outputFmt),
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -462,39 +430,23 @@ func newDataProtectionCmd() *cobra.Command {
 				return fmt.Errorf("data protection audit failed: %w", err)
 			}
 
-			if output != "" {
-				if err := writeReportToFile(output, report); err != nil {
+			if filePath != "" {
+				if err := writeReportToFile(filePath, report); err != nil {
 					return err
 				}
 			}
 
-			if summary {
-				printSummary(os.Stdout, report)
-			} else if reportFmt == "json" {
-				if err := printJSON(report); err != nil {
-					return err
-				}
-			} else {
-				s := report.Summary
-				fmt.Printf("Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
-					report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
-				if len(report.Findings) > 0 {
-					fmt.Println()
-				}
-				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
-					Colored:        color,
-					IncludeSavings: false,
-					IncludeDomain:  false,
-					IncludeProfile: allProfiles,
-					LocationLabel:  "REGION",
-				})
+			if err := renderAWSDataProtectionOutput(os.Stdout, report, outputFmt, summary, color, allProfiles); err != nil {
+				return err
 			}
 
 			if policy.ShouldFail("dataprotection", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
 			if hasCriticalOrHighFindings(report.Findings) {
-				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				if outputFmt != "json" {
+					fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				}
 				os.Exit(1)
 			}
 			return nil
@@ -504,9 +456,9 @@ func newDataProtectionCmd() *cobra.Command {
 	cmd.Flags().StringVar(&profile, "profile", "", "AWS profile name (default: uses environment / default profile)")
 	cmd.Flags().BoolVar(&allProfiles, "all-profiles", false, "Audit all configured AWS profiles")
 	cmd.Flags().StringSliceVar(&regions, "region", nil, "AWS region(s) to audit (default: all active regions)")
-	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().StringVar(&outputFmt, "output", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
-	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 
@@ -525,11 +477,116 @@ func hasCriticalOrHighFindings(findings []models.Finding) bool {
 	return false
 }
 
-// printJSON writes the report as indented JSON to stdout.
-func printJSON(report *models.AuditReport) error {
-	enc := json.NewEncoder(os.Stdout)
+// encodeJSON writes report as indented JSON to w.
+// All render functions use this so tests can inject a bytes.Buffer.
+func encodeJSON(w io.Writer, report *models.AuditReport) error {
+	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(report)
+}
+
+// renderKubernetesAuditOutput writes the kubernetes audit report to w.
+// JSON mode is checked first so it takes priority over --summary.
+// In JSON mode only the JSON payload is written; no banner or table.
+func renderKubernetesAuditOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool) error {
+	if outputFmt == "json" {
+		return encodeJSON(w, report)
+	}
+	if summary {
+		printSummary(w, report)
+		return nil
+	}
+	s := report.Summary
+	fmt.Fprintf(w, "Context: %-30s  Findings: %d\n", report.Profile, s.TotalFindings)
+	if len(report.Findings) > 0 {
+		fmt.Fprintln(w)
+	}
+	dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
+		Colored:        colored,
+		IncludeSavings: false,
+		IncludeDomain:  false,
+		IncludeProfile: false,
+		LocationLabel:  "CONTEXT",
+	})
+	return nil
+}
+
+// renderAWSCostOutput writes the cost audit report to w.
+// JSON mode is checked first so it takes priority over --summary.
+func renderAWSCostOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool, allProfiles bool) error {
+	if outputFmt == "json" {
+		return encodeJSON(w, report)
+	}
+	if summary {
+		printSummary(w, report)
+		return nil
+	}
+	s := report.Summary
+	fmt.Fprintf(w, "Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d  Est. Savings: $%.2f/mo\n",
+		report.Profile, report.AccountID, len(report.Regions), s.TotalFindings, s.TotalEstimatedMonthlySavings)
+	if len(report.Findings) > 0 {
+		fmt.Fprintln(w)
+	}
+	dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
+		Colored:        colored,
+		IncludeSavings: true,
+		IncludeDomain:  false,
+		IncludeProfile: allProfiles,
+		LocationLabel:  "REGION",
+	})
+	return nil
+}
+
+// renderAWSSecurityOutput writes the security audit report to w.
+// JSON mode is checked first so it takes priority over --summary.
+func renderAWSSecurityOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool, allProfiles bool) error {
+	if outputFmt == "json" {
+		return encodeJSON(w, report)
+	}
+	if summary {
+		printSummary(w, report)
+		return nil
+	}
+	s := report.Summary
+	fmt.Fprintf(w, "Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+		report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
+	if len(report.Findings) > 0 {
+		fmt.Fprintln(w)
+	}
+	dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
+		Colored:        colored,
+		IncludeSavings: false,
+		IncludeDomain:  false,
+		IncludeProfile: allProfiles,
+		LocationLabel:  "REGION",
+	})
+	return nil
+}
+
+// renderAWSDataProtectionOutput writes the data-protection audit report to w.
+// JSON mode is checked first so it takes priority over --summary.
+func renderAWSDataProtectionOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool, allProfiles bool) error {
+	if outputFmt == "json" {
+		return encodeJSON(w, report)
+	}
+	if summary {
+		printSummary(w, report)
+		return nil
+	}
+	s := report.Summary
+	fmt.Fprintf(w, "Profile: %-20s  Account: %-14s  Regions: %d  Findings: %d\n",
+		report.Profile, report.AccountID, len(report.Regions), s.TotalFindings)
+	if len(report.Findings) > 0 {
+		fmt.Fprintln(w)
+	}
+	dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
+		Colored:        colored,
+		IncludeSavings: false,
+		IncludeDomain:  false,
+		IncludeProfile: allProfiles,
+		LocationLabel:  "REGION",
+	})
+	return nil
 }
 
 // writeReportToFile serialises report as indented JSON and writes it to path,
@@ -719,12 +776,13 @@ func printClusterInspect(w io.Writer, data *kube.ClusterData) {
 // newKubernetesAuditCmd implements dp kubernetes audit.
 func newKubernetesAuditCmd() *cobra.Command {
 	var (
-		contextName string
-		reportFmt   string
-		summary     bool
-		output      string
-		policyPath  string
-		color       bool
+		contextName   string
+		outputFmt     string
+		summary       bool
+		filePath      string
+		policyPath    string
+		color         bool
+		excludeSystem bool
 	)
 
 	cmd := &cobra.Command{
@@ -758,8 +816,9 @@ func newKubernetesAuditCmd() *cobra.Command {
 			)
 
 			opts := engine.KubernetesAuditOptions{
-				ContextName:  contextName,
-				ReportFormat: engine.ReportFormat(reportFmt),
+				ContextName:   contextName,
+				ReportFormat:  engine.ReportFormat(outputFmt),
+				ExcludeSystem: excludeSystem,
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -767,38 +826,23 @@ func newKubernetesAuditCmd() *cobra.Command {
 				return fmt.Errorf("kubernetes audit failed: %w", err)
 			}
 
-			if output != "" {
-				if err := writeReportToFile(output, report); err != nil {
+			if filePath != "" {
+				if err := writeReportToFile(filePath, report); err != nil {
 					return err
 				}
 			}
 
-			if summary {
-				printSummary(os.Stdout, report)
-			} else if reportFmt == "json" {
-				if err := printJSON(report); err != nil {
-					return err
-				}
-			} else {
-				s := report.Summary
-				fmt.Printf("Context: %-30s  Findings: %d\n", report.Profile, s.TotalFindings)
-				if len(report.Findings) > 0 {
-					fmt.Println()
-				}
-				dpoutput.RenderTable(os.Stdout, report.Findings, dpoutput.TableOptions{
-					Colored:        color,
-					IncludeSavings: false,
-					IncludeDomain:  false,
-					IncludeProfile: false,
-					LocationLabel:  "CONTEXT",
-				})
+			if err := renderKubernetesAuditOutput(os.Stdout, report, outputFmt, summary, color); err != nil {
+				return err
 			}
 
 			if policy.ShouldFail("kubernetes", report.Findings, policyCfg) {
 				return fmt.Errorf("policy enforcement triggered: findings at or above configured fail_on_severity")
 			}
 			if hasCriticalOrHighFindings(report.Findings) {
-				fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				if outputFmt != "json" {
+					fmt.Fprintln(os.Stderr, "audit completed with CRITICAL or HIGH findings")
+				}
 				os.Exit(1)
 			}
 			return nil
@@ -806,11 +850,12 @@ func newKubernetesAuditCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&contextName, "context", "", "Kubeconfig context to use (default: current context)")
-	cmd.Flags().StringVar(&reportFmt, "report", "table", "Output format: json or table")
+	cmd.Flags().StringVar(&outputFmt, "output", "table", "Output format: json or table")
 	cmd.Flags().BoolVar(&summary, "summary", false, "Print compact summary: totals, severity breakdown, top-5 findings")
-	cmd.Flags().StringVar(&output, "output", "", "Write full JSON report to this file path (in addition to stdout output)")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write full JSON report to this file path (in addition to stdout output)")
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
+	cmd.Flags().BoolVar(&excludeSystem, "exclude-system", false, "Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease)")
 
 	return cmd
 }

@@ -85,6 +85,13 @@ to CRITICAL will survive a `min_severity: HIGH` filter.
 **Enforcement fires after all output:** JSON/table/summary is always printed to stdout before
 the exit-code check. stderr receives the enforcement error message.
 
+**JSON mode produces pure JSON:** When `--output json` is set, stdout contains **only the JSON
+payload** — no banner lines, no summary text, no table headers, no context lines. JSON mode
+takes priority even when `--summary` is also passed. The stderr message
+`"audit completed with CRITICAL or HIGH findings"` is also suppressed in JSON mode to prevent
+contaminating piped streams. Exit code 1 is still raised unconditionally when CRITICAL or HIGH
+findings exist, regardless of output format.
+
 **Severity ordering:** `CRITICAL > HIGH > MEDIUM > LOW > INFO`
 
 **Rules supporting threshold params:**
@@ -103,7 +110,7 @@ the exit-code check. stderr receives the enforcement error message.
 echo $?   # 1 if HIGH+ findings present, 0 otherwise
 
 # Capture JSON report and still enforce
-./dp aws audit security --policy ./dp.yaml --report=json > report.json
+./dp aws audit security --policy ./dp.yaml --output=json > report.json
 ```
 
 ### Using `--policy`
@@ -182,7 +189,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit cost
 
 # Named profile, JSON output
-./dp aws audit cost --profile staging --report=json
+./dp aws audit cost --profile staging --output=json
 
 # All configured profiles
 ./dp aws audit cost --all-profiles
@@ -191,10 +198,10 @@ go build -o dp ./cmd/dp
 ./dp aws audit cost --profile prod --region us-east-1 --region eu-west-1 --days 14
 
 # Compact summary to stdout, also save full JSON report to file
-./dp aws audit cost --profile prod --summary --output report.json
+./dp aws audit cost --profile prod --summary --file report.json
 
 # Table output to stdout and full JSON saved to file
-./dp aws audit cost --output /tmp/audit.json
+./dp aws audit cost --file /tmp/audit.json
 ```
 
 #### Flags (`dp aws audit cost`)
@@ -205,9 +212,9 @@ go build -o dp ./cmd/dp
 | `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
 | `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
 | `--days` | int | `30` | Lookback window for cost and CloudWatch metric queries |
-| `--report` | string | `table` | Output format: `table` or `json` |
+| `--output` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
-| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### AWS security audit
@@ -217,7 +224,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit security
 
 # Named profile, JSON output
-./dp aws audit security --profile staging --report=json
+./dp aws audit security --profile staging --output=json
 
 # All configured profiles
 ./dp aws audit security --all-profiles
@@ -226,7 +233,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit security --region us-east-1 --region eu-west-1 --summary
 
 # Save full JSON report to file
-./dp aws audit security --output security-report.json
+./dp aws audit security --file security-report.json
 ```
 
 #### Flags (`dp aws audit security`)
@@ -236,9 +243,9 @@ go build -o dp ./cmd/dp
 | `--profile` | string | `""` | Named AWS profile (empty = default/env credentials) |
 | `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
 | `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
-| `--report` | string | `table` | Output format: `table` or `json` |
+| `--output` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
-| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### AWS data protection audit
@@ -248,7 +255,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit dataprotection
 
 # Named profile, JSON output
-./dp aws audit dataprotection --profile staging --report=json
+./dp aws audit dataprotection --profile staging --output=json
 
 # All configured profiles
 ./dp aws audit dataprotection --all-profiles
@@ -257,7 +264,7 @@ go build -o dp ./cmd/dp
 ./dp aws audit dataprotection --region us-east-1 --region eu-west-1 --summary
 
 # Save full JSON report to file
-./dp aws audit dataprotection --output dp-report.json
+./dp aws audit dataprotection --file dp-report.json
 ```
 
 #### Flags (`dp aws audit dataprotection`)
@@ -267,9 +274,9 @@ go build -o dp ./cmd/dp
 | `--profile` | string | `""` | Named AWS profile (empty = default/env credentials) |
 | `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
 | `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
-| `--report` | string | `table` | Output format: `table` or `json` |
+| `--output` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
-| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 ### Unified AWS audit (`dp aws audit --all`)
@@ -287,7 +294,7 @@ severity wins, savings summed).
 ./dp aws audit --all
 
 # Named profile, JSON output, save to file
-./dp aws audit --all --profile staging --report=json --output all-report.json
+./dp aws audit --all --profile staging --output=json --file all-report.json
 
 # All profiles, compact summary
 ./dp aws audit --all --all-profiles --summary
@@ -321,9 +328,9 @@ my-public-bucket                           global           HIGH        S3_BUCKE
 | `--all-profiles` | bool | `false` | Audit every profile in `~/.aws/config` |
 | `--region` | []string | `nil` | Explicit regions; omit to auto-discover active regions |
 | `--days` | int | `30` | Lookback window for cost queries |
-| `--report` | string | `table` | Output format: `table` or `json` |
+| `--output` | string | `table` | Output format: `table` or `json` |
 | `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
-| `--output` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 
 #### Merging behaviour
@@ -335,6 +342,109 @@ my-public-bucket                           global           HIGH        S3_BUCKE
 | Policy per-domain | Applied inside each engine before global merge |
 | Policy enforcement | Exit 1 if any domain triggers `fail_on_severity`; all output is printed first |
 | `audit_type` in JSON | `"all"` |
+
+### Kubernetes audit
+
+```bash
+# Audit current kubeconfig context, table output
+./dp kubernetes audit
+
+# Audit a specific context, JSON output
+./dp kubernetes audit --context prod-eks --output=json
+
+# Compact summary
+./dp kubernetes audit --summary
+
+# Save full JSON report to file
+./dp kubernetes audit --file k8s-report.json
+
+# With policy enforcement
+./dp kubernetes audit --policy ./dp.yaml
+
+# Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease)
+./dp kubernetes audit --exclude-system
+```
+
+#### Flags (`dp kubernetes audit`)
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--context` | string | `""` | Kubeconfig context to use (empty = current context) |
+| `--output` | string | `table` | Output format: `table` or `json` |
+| `--summary` | bool | `false` | Print compact summary: totals, severity breakdown, top-5 findings |
+| `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
+| `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
+| `--exclude-system` | bool | `false` | Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease) |
+
+#### Namespace Classification (Phase 3C)
+
+Every finding in a Kubernetes audit report carries a `namespace_type` metadata key:
+
+| Value | Meaning |
+|-------|---------|
+| `"system"` | Finding belongs to a system namespace: `kube-system`, `kube-public`, or `kube-node-lease` |
+| `"workload"` | Finding belongs to a user namespace (e.g. `production`, `staging`, `default`) |
+| `"cluster"` | Finding is cluster-scoped and has no namespace (nodes, cluster-level, EKS control-plane rules) |
+
+This classification is always present in the JSON output regardless of `--exclude-system`:
+
+```json
+{
+  "rule_id": "K8S_PRIVILEGED_CONTAINER",
+  "resource_id": "my-pod",
+  "resource_type": "K8S_POD",
+  "metadata": {
+    "namespace": "production",
+    "namespace_type": "workload",
+    "container_name": "app"
+  }
+}
+```
+
+Use `--exclude-system` to suppress findings from system namespaces in CI pipelines where system-level noise is expected:
+
+```bash
+# CI: fail only on workload findings, ignore system namespace issues
+./dp kubernetes audit --exclude-system --policy ./dp.yaml
+```
+
+#### Risk Correlation (Phase 4A)
+
+After findings are generated, the engine runs a compound risk correlation pass. Findings that participate in a multi-signal risk chain are annotated with two extra metadata keys:
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `risk_chain_score` | int | Compound risk score (higher = more dangerous) |
+| `risk_chain_reason` | string | Human-readable explanation for the chain |
+
+Three chains are detected:
+
+| Score | Chain | Condition |
+|-------|-------|-----------|
+| **80** | Public LB + privileged workload | A `K8S_SERVICE_PUBLIC_LOADBALANCER` service and a pod with `K8S_POD_RUN_AS_ROOT` or `K8S_POD_CAP_SYS_ADMIN` co-exist in the **same namespace** |
+| **60** | Default SA + automount | A pod uses the default ServiceAccount (`K8S_DEFAULT_SERVICEACCOUNT_USED`) and the SA has token automount enabled (`K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`) in the **same namespace** |
+| **50** | Single-node + critical violation | The cluster has one node (`K8S_CLUSTER_SINGLE_NODE`) **and** a CRITICAL severity finding exists |
+
+When a finding participates in multiple chains, the highest score is kept. Severity and sort order are unchanged.
+
+Example JSON output for a chain-1 finding:
+
+```json
+{
+  "rule_id": "K8S_SERVICE_PUBLIC_LOADBALANCER",
+  "resource_id": "web-svc",
+  "resource_type": "K8S_SERVICE",
+  "severity": "HIGH",
+  "metadata": {
+    "namespace": "production",
+    "namespace_type": "workload",
+    "risk_chain_score": 80,
+    "risk_chain_reason": "Public service exposes privileged workload"
+  }
+}
+```
+
+---
 
 ### Kubernetes inspect
 
@@ -693,9 +803,9 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] `dp kubernetes inspect` command (context, API server, node/namespace counts)
 - [x] `dp kubernetes audit` command with 6 rules (single-node, overallocated, namespace limits, privileged container, public LB, pod no requests)
 - [x] AWS security audit: S3, IAM MFA, root access keys, open SSH/RDP security groups
-- [x] `dp aws audit security` command with table, JSON, summary, and --output flag
+- [x] `dp aws audit security` command with table, JSON, summary, --output, and --file flags
 - [x] AWS data protection audit: EBS encryption, RDS storage encryption, S3 default encryption
-- [x] `dp aws audit dataprotection` command with table, JSON, summary, and --output flag
+- [x] `dp aws audit dataprotection` command with table, JSON, summary, --output, and --file flags
 - [x] `--policy` CLI flag on all four audit commands with auto-detection of `./dp.yaml`
 - [x] Policy integration for cost, security, data protection, and Kubernetes engines
 - [x] Threshold overrides via `rules.<ID>.params` in `dp.yaml` (EC2, RDS, NAT rules)
@@ -719,6 +829,10 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Coloured severity output via `--color` flag (ANSI codes, CI-safe default)
 - [x] Exit code 1 on CRITICAL/HIGH findings (unconditional, independent of `--policy` enforcement)
 - [x] `--all-profiles` cost aggregation: TotalCostUSD and ServiceBreakdown correctly summed across profiles
+- [x] Phase 3B: Kubernetes admission/SA governance rules (K8S_POD_SECURITY_ADMISSION_NOT_ENFORCED, K8S_NAMESPACE_PSS_NOT_SET, K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT, K8S_DEFAULT_SERVICEACCOUNT_USED)
+- [x] Phase 3C: Namespace classification — every K8s finding tagged `namespace_type=system|workload|cluster` in metadata
+- [x] Phase 3C: `--exclude-system` flag on `dp kubernetes audit` to filter out system-namespace findings
+- [x] Phase 4A: Kubernetes risk correlation — 3 compound risk chains (scores 80/60/50), `risk_chain_score` + `risk_chain_reason` metadata
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module

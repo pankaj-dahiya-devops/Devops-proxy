@@ -132,13 +132,22 @@ func (e *AllAWSDomainsEngine) RunAllAWSAudit(
 		enforcedDomains = append(enforcedDomains, "dataprotection")
 	}
 
-	// -- Global merge: concatenate → cross-domain deduplicate → sort --
+	// -- Global concatenate + sort (no cross-domain merge) --
+	//
+	// Each domain engine already performs intra-domain deduplication via its
+	// own mergeFindings call. Running mergeFindings again here would collapse
+	// findings for the same resource from different domains (e.g. vol-xxx
+	// appearing as MEDIUM in cost and HIGH in dataprotection) into a single
+	// finding at the highest severity — silently escalating a cost MEDIUM to
+	// HIGH. Domain membership must NOT influence severity (see requirement 4).
+	//
+	// Each domain's findings are therefore concatenated as-is; per-domain
+	// severity is preserved. sortFindings provides the global ordering.
 	var all []models.Finding
 	all = append(all, costReport.Findings...)
 	all = append(all, secReport.Findings...)
 	all = append(all, dpReport.Findings...)
-	merged := mergeFindings(all)
-	sortFindings(merged)
+	sortFindings(all)
 
 	// -- Deduplicate region list across all three domain reports --
 	seen := make(map[string]struct{})
@@ -157,8 +166,8 @@ func (e *AllAWSDomainsEngine) RunAllAWSAudit(
 		Profile:     costReport.Profile,
 		AccountID:   costReport.AccountID,
 		Regions:     regions,
-		Summary:     computeSummary(merged),
-		Findings:    merged,
+		Summary:     computeSummary(all),
+		Findings:    all,
 		CostSummary: costReport.CostSummary,
 	}
 

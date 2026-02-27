@@ -224,6 +224,9 @@ func (r K8SServicePublicLoadBalancerRule) Evaluate(ctx RuleContext) []models.Fin
 				awsInternalLBAnnotation,
 			),
 			DetectedAt: time.Now().UTC(),
+			Metadata: map[string]any{
+				"namespace": svc.Namespace,
+			},
 		})
 	}
 	return findings

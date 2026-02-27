@@ -30,6 +30,25 @@ type KubernetesNamespaceData struct {
 	// HasLimitRange is true when at least one LimitRange object exists
 	// in the namespace, indicating default resource limits are configured.
 	HasLimitRange bool `json:"has_limit_range"`
+
+	// Labels is a copy of the namespace's label map, used for Pod Security
+	// Admission enforcement checks (pod-security.kubernetes.io/enforce).
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+// KubernetesServiceAccountData holds processed ServiceAccount data consumed
+// by K8s governance rules.
+type KubernetesServiceAccountData struct {
+	// Name is the ServiceAccount name.
+	Name string `json:"name"`
+
+	// Namespace is the Kubernetes namespace that owns this ServiceAccount.
+	Namespace string `json:"namespace"`
+
+	// AutomountServiceAccountToken reflects the automountServiceAccountToken
+	// field on the ServiceAccount. Nil means the field was not set (Kubernetes
+	// defaults to true). False means token auto-mounting is explicitly disabled.
+	AutomountServiceAccountToken *bool `json:"automount_service_account_token,omitempty"`
 }
 
 // KubernetesContainerData holds processed container data consumed by K8s rules.
@@ -45,6 +64,23 @@ type KubernetesContainerData struct {
 
 	// HasMemoryRequest is true when the container declares a non-zero memory resource request.
 	HasMemoryRequest bool `json:"has_memory_request"`
+
+	// RunAsNonRoot is the effective runAsNonRoot flag resolved at collection time
+	// (container-level overrides pod-level). Nil means not configured.
+	RunAsNonRoot *bool `json:"run_as_non_root,omitempty"`
+
+	// RunAsUser is the effective UID resolved at collection time
+	// (container-level overrides pod-level). Nil means not configured.
+	RunAsUser *int64 `json:"run_as_user,omitempty"`
+
+	// AddedCapabilities lists the Linux capabilities added via
+	// securityContext.capabilities.add.
+	AddedCapabilities []string `json:"added_capabilities,omitempty"`
+
+	// SeccompProfileType is the effective seccomp profile type resolved at
+	// collection time (container-level overrides pod-level).
+	// Values: "RuntimeDefault", "Localhost", "Unconfined", or "" when not set.
+	SeccompProfileType string `json:"seccomp_profile_type,omitempty"`
 }
 
 // KubernetesPodData holds processed pod data consumed by K8s rules.
@@ -54,6 +90,20 @@ type KubernetesPodData struct {
 
 	// Namespace is the Kubernetes namespace that owns this pod.
 	Namespace string `json:"namespace"`
+
+	// HostNetwork is true when spec.hostNetwork == true.
+	HostNetwork bool `json:"host_network,omitempty"`
+
+	// HostPID is true when spec.hostPID == true.
+	HostPID bool `json:"host_pid,omitempty"`
+
+	// HostIPC is true when spec.hostIPC == true.
+	HostIPC bool `json:"host_ipc,omitempty"`
+
+	// ServiceAccountName is the service account the pod runs as
+	// (spec.serviceAccountName). Empty string means Kubernetes will use the
+	// "default" service account for the pod's namespace.
+	ServiceAccountName string `json:"service_account_name,omitempty"`
 
 	// Containers holds per-container security and resource data.
 	Containers []KubernetesContainerData `json:"containers,omitempty"`
@@ -121,6 +171,9 @@ type KubernetesClusterData struct {
 
 	// Services holds per-Service network exposure data.
 	Services []KubernetesServiceData `json:"services,omitempty"`
+
+	// ServiceAccounts holds all ServiceAccounts collected from the cluster.
+	ServiceAccounts []KubernetesServiceAccountData `json:"service_accounts,omitempty"`
 
 	// EKSData holds EKS-specific control-plane configuration.
 	// Nil for non-EKS clusters or when EKS data collection is disabled.

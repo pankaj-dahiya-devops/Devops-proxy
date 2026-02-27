@@ -424,16 +424,15 @@ func TestKubernetesEngine_MixedFindings(t *testing.T) {
 		t.Fatalf("RunAudit error: %v", err)
 	}
 
-	ruleIDs := make(map[string]bool)
-	for _, f := range report.Findings {
-		ruleIDs[f.RuleID] = true
-	}
+	// Use allPSSRuleIDs to check both primary RuleID and Metadata["rules"],
+	// since PSS rules may merge with other rules for the same pod resource.
+	ruleIDs := allPSSRuleIDs(report)
 	for _, want := range []string{
 		"K8S_PRIVILEGED_CONTAINER",
 		"K8S_SERVICE_PUBLIC_LOADBALANCER",
 		"K8S_POD_NO_RESOURCE_REQUESTS",
 	} {
-		if !ruleIDs[want] {
+		if _, ok := ruleIDs[want]; !ok {
 			t.Errorf("expected finding for rule %q; not found in report", want)
 		}
 	}
