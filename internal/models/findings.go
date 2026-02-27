@@ -65,6 +65,9 @@ type AuditSummary struct {
 	MediumFindings               int     `json:"medium_findings"`
 	LowFindings                  int     `json:"low_findings"`
 	TotalEstimatedMonthlySavings float64 `json:"total_estimated_monthly_savings_usd"`
+	// RiskScore is the highest risk_chain_score across all correlated findings.
+	// 0 means no risk chain was detected. Populated only for Kubernetes audits.
+	RiskScore int `json:"risk_score"`
 }
 
 // AuditReport is the top-level, SaaS-compatible output of any audit run.

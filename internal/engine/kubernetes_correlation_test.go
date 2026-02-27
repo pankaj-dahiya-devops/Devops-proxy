@@ -795,3 +795,250 @@ func TestCorrelationEngine_ExcludeSystem_ChainStillFires(t *testing.T) {
 		t.Error("workload LB finding should still have risk_chain_score=80 with ExcludeSystem=true")
 	}
 }
+
+// ── Unit tests: getRiskScore ──────────────────────────────────────────────────
+
+// TestGetRiskScore_Present verifies that getRiskScore returns the stored int score.
+func TestGetRiskScore_Present(t *testing.T) {
+	f := models.Finding{
+		RuleID:   "K8S_SERVICE_PUBLIC_LOADBALANCER",
+		Metadata: map[string]any{"risk_chain_score": 80},
+	}
+	if got := getRiskScore(f); got != 80 {
+		t.Errorf("getRiskScore = %d; want 80", got)
+	}
+}
+
+// TestGetRiskScore_Absent verifies that getRiskScore returns 0 when the key is missing.
+func TestGetRiskScore_Absent(t *testing.T) {
+	f := models.Finding{RuleID: "K8S_POD_RUN_AS_ROOT", Metadata: map[string]any{"namespace": "prod"}}
+	if got := getRiskScore(f); got != 0 {
+		t.Errorf("getRiskScore = %d; want 0", got)
+	}
+}
+
+// TestGetRiskScore_NilMetadata verifies that getRiskScore does not panic on nil Metadata.
+func TestGetRiskScore_NilMetadata(t *testing.T) {
+	f := models.Finding{RuleID: "K8S_POD_RUN_AS_ROOT", Metadata: nil}
+	if got := getRiskScore(f); got != 0 {
+		t.Errorf("getRiskScore = %d; want 0", got)
+	}
+}
+
+// ── Engine-level summary.risk_score tests ─────────────────────────────────────
+
+// TestCorrelationEngine_SummaryRiskScore_Chain1 verifies that when chain 1 fires
+// (public LB + privileged workload in same namespace), report.Summary.RiskScore == 80.
+func TestCorrelationEngine_SummaryRiskScore_Chain1(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "summary-risk-chain1-ctx").RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if report.Summary.RiskScore != 80 {
+		t.Errorf("Summary.RiskScore = %d; want 80 (chain 1 triggered)", report.Summary.RiskScore)
+	}
+}
+
+// TestCorrelationEngine_SummaryRiskScore_NoChain verifies that when no risk chain
+// fires, report.Summary.RiskScore == 0.
+func TestCorrelationEngine_SummaryRiskScore_NoChain(t *testing.T) {
+	// Two nodes, no pods, no services — only K8S_NAMESPACE_WITHOUT_LIMITS on default ns.
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+	)
+	report, err := correlationEngine(cs, "summary-risk-nochain-ctx").RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if report.Summary.RiskScore != 0 {
+		t.Errorf("Summary.RiskScore = %d; want 0 (no chain triggered)", report.Summary.RiskScore)
+	}
+}
+
+// ── Unit tests: filterByMinRiskScore ─────────────────────────────────────────
+
+// TestFilterByMinRiskScore_KeepsAboveMin verifies that findings at or above the
+// minimum score are retained.
+func TestFilterByMinRiskScore_KeepsAboveMin(t *testing.T) {
+	findings := []models.Finding{
+		{RuleID: "A", Metadata: map[string]any{"risk_chain_score": 80}},
+		{RuleID: "B", Metadata: map[string]any{"risk_chain_score": 60}},
+		{RuleID: "C", Metadata: map[string]any{"risk_chain_score": 50}},
+	}
+	got := filterByMinRiskScore(findings, 60)
+	if len(got) != 2 {
+		t.Fatalf("filterByMinRiskScore(60) returned %d findings; want 2", len(got))
+	}
+	for _, f := range got {
+		if getRiskScore(f) < 60 {
+			t.Errorf("finding %q has score %d; should have been excluded", f.RuleID, getRiskScore(f))
+		}
+	}
+}
+
+// TestFilterByMinRiskScore_ExcludesNoScore verifies that findings with no
+// risk_chain_score (score == 0) are excluded when min > 0.
+func TestFilterByMinRiskScore_ExcludesNoScore(t *testing.T) {
+	findings := []models.Finding{
+		{RuleID: "A", Metadata: map[string]any{"risk_chain_score": 80}},
+		{RuleID: "B", Metadata: map[string]any{"namespace": "prod"}}, // no score
+		{RuleID: "C", Metadata: nil},                                  // nil metadata
+	}
+	got := filterByMinRiskScore(findings, 10)
+	if len(got) != 1 || got[0].RuleID != "A" {
+		t.Errorf("filterByMinRiskScore(10) returned %v; want [A]", got)
+	}
+}
+
+// TestFilterByMinRiskScore_AllExcluded verifies that a threshold higher than any
+// chain score results in an empty slice.
+func TestFilterByMinRiskScore_AllExcluded(t *testing.T) {
+	findings := []models.Finding{
+		{RuleID: "A", Metadata: map[string]any{"risk_chain_score": 80}},
+		{RuleID: "B", Metadata: map[string]any{"risk_chain_score": 60}},
+	}
+	got := filterByMinRiskScore(findings, 90)
+	if len(got) != 0 {
+		t.Errorf("filterByMinRiskScore(90) returned %d findings; want 0", len(got))
+	}
+}
+
+// TestFilterByMinRiskScore_ZeroMinReturnsAll verifies that min==0 is a no-op
+// (all findings returned). The engine guards with opts.MinRiskScore > 0 before
+// calling filterByMinRiskScore, but the function itself must also be safe at 0.
+func TestFilterByMinRiskScore_ZeroMinReturnsAll(t *testing.T) {
+	findings := []models.Finding{
+		{RuleID: "A", Metadata: map[string]any{"risk_chain_score": 80}},
+		{RuleID: "B", Metadata: map[string]any{"namespace": "prod"}},
+	}
+	got := filterByMinRiskScore(findings, 0)
+	if len(got) != 2 {
+		t.Errorf("filterByMinRiskScore(0) returned %d findings; want 2 (all)", len(got))
+	}
+}
+
+// ── Engine-level integration tests: MinRiskScore ─────────────────────────────
+
+// TestCorrelationEngine_MinRiskScore_Chain1_PassesAt60 verifies that with
+// MinRiskScore=60, chain 1 findings (score 80) are retained in the report.
+func TestCorrelationEngine_MinRiskScore_Chain1_PassesAt60(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "min-risk-60-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		MinRiskScore: 60,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if len(report.Findings) == 0 {
+		t.Fatal("expected findings with MinRiskScore=60 when chain 1 (score 80) fires")
+	}
+	for _, f := range report.Findings {
+		if getRiskScore(f) < 60 {
+			t.Errorf("finding %q has score %d; should have been excluded by MinRiskScore=60",
+				f.RuleID, getRiskScore(f))
+		}
+	}
+}
+
+// TestCorrelationEngine_MinRiskScore_Chain1_ExcludedAt90 verifies that with
+// MinRiskScore=90, chain 1 findings (score 80) are excluded and the report is empty.
+func TestCorrelationEngine_MinRiskScore_Chain1_ExcludedAt90(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "min-risk-90-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		MinRiskScore: 90,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("expected 0 findings with MinRiskScore=90 (chain 1 score is 80); got %d", len(report.Findings))
+	}
+}
+
+// TestCorrelationEngine_MinRiskScore_NoChain_ExcludedAt10 verifies that when no
+// chain fires (all scores are 0), MinRiskScore=10 excludes all findings.
+func TestCorrelationEngine_MinRiskScore_NoChain_ExcludedAt10(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+	)
+	report, err := correlationEngine(cs, "min-risk-no-chain-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		MinRiskScore: 10,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("expected 0 findings with MinRiskScore=10 and no chain; got %d", len(report.Findings))
+	}
+}
+
+// TestCorrelationEngine_MinRiskScore_SummaryRiskScoreUnchanged verifies that
+// Summary.RiskScore reflects the pre-filter risk picture even when MinRiskScore
+// causes all findings to be excluded.
+func TestCorrelationEngine_MinRiskScore_SummaryRiskScoreUnchanged(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "min-risk-summary-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		MinRiskScore: 90, // excludes all (chain 1 score is 80)
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	// Findings filtered out, but Summary.RiskScore must still show the chain 1 score.
+	if report.Summary.RiskScore != 80 {
+		t.Errorf("Summary.RiskScore = %d; want 80 (pre-filter chain 1 score preserved)", report.Summary.RiskScore)
+	}
+	if len(report.Findings) != 0 {
+		t.Errorf("expected 0 findings (all excluded by MinRiskScore=90); got %d", len(report.Findings))
+	}
+}
+
+// TestCorrelationEngine_MinRiskScore_SortingUnaffected verifies that findings
+// retained after MinRiskScore filtering remain in CRITICAL → HIGH → MEDIUM order.
+func TestCorrelationEngine_MinRiskScore_SortingUnaffected(t *testing.T) {
+	// Chain 1 (score 80): LB in production + run-as-root pod in production
+	// Chain 3 (score 50): single node + CRITICAL pod
+	// MinRiskScore=60 → only chain 1 findings (80) survive
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssPrivilegedPod("priv-pod", "production"), // CRITICAL — chain 3 (50)
+		pssRunAsRootPod("root-pod", "production"),  // HIGH — chain 1 (80)
+	)
+	report, err := correlationEngine(cs, "min-risk-sort-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		MinRiskScore: 60,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	for i := 1; i < len(report.Findings); i++ {
+		prev := severityRank[report.Findings[i-1].Severity]
+		curr := severityRank[report.Findings[i].Severity]
+		if curr < prev {
+			t.Errorf("findings not sorted at position %d (%s) after MinRiskScore filter",
+				i, report.Findings[i].Severity)
+		}
+	}
+}
