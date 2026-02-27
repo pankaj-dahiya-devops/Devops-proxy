@@ -66,12 +66,15 @@ func domainReportWith(auditType string, findings []models.Finding) *models.Audit
 
 // ── TestAuditAll_MergeBehavior ────────────────────────────────────────────────
 
-// TestAuditAll_MergeBehavior verifies that findings for the same resource from
-// two different AWS domains (cost and dataprotection) are merged into a single
-// cross-domain finding that carries the highest severity and the sum of savings.
-func TestAuditAll_MergeBehavior(t *testing.T) {
-	// vol-1 appears in cost (LOW, $5) and dataprotection (HIGH, $0).
-	// Cross-domain merge must yield one finding: severity=HIGH, savings=$5.
+// TestAuditAll_NoCrossDomainEscalation verifies that when the same resource
+// appears in two different domains with different severities, the findings are
+// kept separate and each retains its original per-domain severity.
+//
+// Previously (bug): vol-1 from cost (LOW) and vol-1 from dataprotection (HIGH)
+// were merged into one finding at HIGH — silently escalating the cost severity.
+// Running "dp aws audit cost" showed LOW; "dp aws audit --all" showed HIGH.
+// Domain membership must not influence severity.
+func TestAuditAll_NoCrossDomainEscalation(t *testing.T) {
 	costFindings := []models.Finding{
 		newFinding("vol-1", "us-east-1", "EBS_UNATTACHED", models.SeverityLow, 5.0),
 	}
@@ -94,23 +97,30 @@ func TestAuditAll_MergeBehavior(t *testing.T) {
 		t.Errorf("expected no enforced domains; got %v", enforced)
 	}
 
-	// Cross-domain merge: vol-1 must appear exactly once.
-	if len(report.Findings) != 1 {
-		t.Fatalf("expected 1 merged finding; got %d", len(report.Findings))
+	// Two separate findings must be present — cross-domain must NOT collapse them.
+	if len(report.Findings) != 2 {
+		t.Fatalf("expected 2 findings (one per domain); got %d", len(report.Findings))
 	}
-	f := report.Findings[0]
-	if f.ResourceID != "vol-1" {
-		t.Errorf("ResourceID = %q; want vol-1", f.ResourceID)
+
+	// Findings sorted by severity: HIGH first (DP), then LOW (cost).
+	if report.Findings[0].Severity != models.SeverityHigh {
+		t.Errorf("findings[0].Severity = %q; want HIGH (dataprotection finding)", report.Findings[0].Severity)
 	}
-	// Highest severity across domains must win.
-	if f.Severity != models.SeverityHigh {
-		t.Errorf("Severity = %q; want HIGH (highest across domains)", f.Severity)
+	if report.Findings[1].Severity != models.SeverityLow {
+		t.Errorf("findings[1].Severity = %q; want LOW (cost finding)", report.Findings[1].Severity)
 	}
-	// Savings must be summed across domains.
-	if f.EstimatedMonthlySavings != 5.0 {
-		t.Errorf("EstimatedMonthlySavings = %.2f; want 5.00", f.EstimatedMonthlySavings)
+
+	// The cost finding's savings must be intact on the cost finding itself.
+	var costSavings float64
+	for _, f := range report.Findings {
+		if f.RuleID == "EBS_UNATTACHED" {
+			costSavings = f.EstimatedMonthlySavings
+		}
 	}
-	// AuditType of the unified report must be "all".
+	if costSavings != 5.0 {
+		t.Errorf("cost finding EstimatedMonthlySavings = %.2f; want 5.00", costSavings)
+	}
+
 	if report.AuditType != string(AuditTypeAll) {
 		t.Errorf("AuditType = %q; want %q", report.AuditType, string(AuditTypeAll))
 	}
@@ -260,5 +270,126 @@ func TestAuditAll_KubernetesNotInvoked(t *testing.T) {
 		if len(rt) >= 3 && rt[:3] == "K8S" {
 			t.Errorf("unexpected kubernetes finding in aws --all report: resource_type=%q", rt)
 		}
+	}
+}
+
+// ── Severity preservation tests ───────────────────────────────────────────────
+
+// TestAuditAll_SingleCostFinding_SeverityUnchanged verifies that a single cost
+// finding passed through RunAllAWSAudit is not escalated in any way.
+// Running "dp aws audit cost" and "dp aws audit --all" must produce the same
+// severity for a resource that appears only in the cost domain.
+func TestAuditAll_SingleCostFinding_SeverityUnchanged(t *testing.T) {
+	costFindings := []models.Finding{
+		newFinding("i-0abc123", "us-east-1", "EC2_LOW_CPU", models.SeverityMedium, 12.0),
+	}
+
+	eng := newAllAWSEngine(
+		domainReportWith("cost", costFindings),
+		emptyDomainReport("security", "test", "111122223333", []string{"us-east-1"}),
+		emptyDomainReport("dataprotection", "test", "111122223333", []string{"us-east-1"}),
+		nil,
+	)
+
+	report, _, err := eng.RunAllAWSAudit(context.Background(), AllAWSAuditOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding; got %d", len(report.Findings))
+	}
+	// Severity must be identical to what the cost engine produced.
+	if report.Findings[0].Severity != models.SeverityMedium {
+		t.Errorf("Severity = %q; want MEDIUM (cost-only finding must not be escalated)", report.Findings[0].Severity)
+	}
+	if report.Findings[0].RuleID != "EC2_LOW_CPU" {
+		t.Errorf("RuleID = %q; want EC2_LOW_CPU", report.Findings[0].RuleID)
+	}
+}
+
+// TestAuditAll_IntraDomainMerge_SeverityPreserved verifies that when a domain
+// engine returns a finding whose severity already reflects an intra-domain merge
+// (e.g. two cost rules fired for the same resource and the higher severity won),
+// RunAllAWSAudit preserves that merged severity without modification.
+func TestAuditAll_IntraDomainMerge_SeverityPreserved(t *testing.T) {
+	// Simulate the output of a domain engine that merged two cost findings for
+	// the same resource: EC2_LOW_CPU (MEDIUM) + EC2_NO_SAVINGS_PLAN (MEDIUM).
+	// The domain engine's own mergeFindings produced one MEDIUM finding.
+	merged := newFinding("i-0xyz789", "eu-west-1", "EC2_LOW_CPU", models.SeverityMedium, 20.0)
+	merged.Metadata = map[string]any{
+		"rules": []string{"EC2_LOW_CPU", "EC2_NO_SAVINGS_PLAN"},
+	}
+
+	eng := newAllAWSEngine(
+		domainReportWith("cost", []models.Finding{merged}),
+		emptyDomainReport("security", "test", "111122223333", []string{"eu-west-1"}),
+		emptyDomainReport("dataprotection", "test", "111122223333", []string{"eu-west-1"}),
+		nil,
+	)
+
+	report, _, err := eng.RunAllAWSAudit(context.Background(), AllAWSAuditOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(report.Findings) != 1 {
+		t.Fatalf("expected 1 finding; got %d", len(report.Findings))
+	}
+	if report.Findings[0].Severity != models.SeverityMedium {
+		t.Errorf("Severity = %q; want MEDIUM (intra-domain merge must be preserved)", report.Findings[0].Severity)
+	}
+}
+
+// TestAuditAll_CrossDomain_IndependentSeverities verifies that the three AWS
+// domain engines each contribute their own findings independently to the
+// unified report, and that no cross-domain severity escalation occurs.
+//
+// The same EBS volume (vol-00112233) appears as:
+//   - cost domain:           MEDIUM (GP2 legacy volume — inefficient)
+//   - dataprotection domain: HIGH   (unencrypted at rest)
+//
+// After the fix: both findings must appear at their original severities.
+// Before the fix: the cross-domain merge would escalate the MEDIUM to HIGH.
+func TestAuditAll_CrossDomain_IndependentSeverities(t *testing.T) {
+	vol := "vol-00112233"
+	region := "ap-southeast-1"
+
+	costFindings := []models.Finding{
+		newFinding(vol, region, "EBS_GP2_LEGACY", models.SeverityMedium, 3.0),
+	}
+	dpFindings := []models.Finding{
+		newFinding(vol, region, "EBS_UNENCRYPTED", models.SeverityHigh, 0.0),
+	}
+
+	eng := newAllAWSEngine(
+		domainReportWith("cost", costFindings),
+		emptyDomainReport("security", "test", "111122223333", []string{region}),
+		domainReportWith("dataprotection", dpFindings),
+		nil,
+	)
+
+	report, _, err := eng.RunAllAWSAudit(context.Background(), AllAWSAuditOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Two independent findings — one per domain.
+	if len(report.Findings) != 2 {
+		t.Fatalf("expected 2 findings (one per domain); got %d — cross-domain escalation may have occurred", len(report.Findings))
+	}
+
+	sevByRule := make(map[string]models.Severity, 2)
+	for _, f := range report.Findings {
+		sevByRule[f.RuleID] = f.Severity
+	}
+
+	// Cost finding: must remain MEDIUM regardless of the DP finding.
+	if sevByRule["EBS_GP2_LEGACY"] != models.SeverityMedium {
+		t.Errorf("EBS_GP2_LEGACY severity = %q; want MEDIUM (must not be escalated by DP domain)", sevByRule["EBS_GP2_LEGACY"])
+	}
+	// DP finding: must remain HIGH.
+	if sevByRule["EBS_UNENCRYPTED"] != models.SeverityHigh {
+		t.Errorf("EBS_UNENCRYPTED severity = %q; want HIGH", sevByRule["EBS_UNENCRYPTED"])
 	}
 }

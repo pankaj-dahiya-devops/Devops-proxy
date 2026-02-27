@@ -76,6 +76,20 @@ type KubernetesAuditOptions struct {
 
 	// ReportFormat controls the output format selected by the CLI layer.
 	ReportFormat ReportFormat
+
+	// ExcludeSystem removes findings whose namespace_type metadata is "system"
+	// (kube-system, kube-public, kube-node-lease) from the report.
+	// Cluster-scoped findings (nodes, EKS-level) are always retained.
+	// Default false — all findings are included.
+	ExcludeSystem bool
+}
+
+// systemNamespaces is the canonical set of Kubernetes system namespaces.
+// Findings for resources in these namespaces are tagged namespace_type="system".
+var systemNamespaces = map[string]struct{}{
+	"kube-system":     {},
+	"kube-public":     {},
+	"kube-node-lease": {},
 }
 
 // RunAudit connects to the cluster, collects inventory, detects the cloud
@@ -122,6 +136,11 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 	stampDomain(raw, "kubernetes")
 
 	merged := mergeFindings(raw)
+	annotateNamespaceType(merged)
+	if opts.ExcludeSystem {
+		merged = excludeSystemFindings(merged)
+	}
+	correlateRiskChains(merged) // Phase 4A: compound risk pattern detection
 	filtered := policy.ApplyPolicy(merged, "kubernetes", e.policy)
 	sortFindings(filtered)
 
@@ -196,6 +215,66 @@ func extractEKSInfo(nodes []models.KubernetesNodeData) (clusterName, region stri
 	return
 }
 
+// annotateNamespaceType stamps each finding with Metadata["namespace_type"]:
+//   - "system"   — finding belongs to a system namespace (kube-system, kube-public, kube-node-lease)
+//   - "workload" — finding belongs to a user namespace
+//   - "cluster"  — finding is cluster-scoped (nodes, cluster-level, EKS rules)
+//
+// Namespace is resolved in priority order:
+//  1. ResourceType == K8S_NAMESPACE: ResourceID is the namespace name.
+//  2. Otherwise: Metadata["namespace"] string, if present and non-empty.
+//  3. Neither applies: cluster-scoped → tag "cluster".
+//
+// Must be called after mergeFindings (merged Metadata is available) and before
+// policy.ApplyPolicy so policy rules can filter on namespace_type in future.
+func annotateNamespaceType(findings []models.Finding) {
+	for i := range findings {
+		f := &findings[i]
+		if f.Metadata == nil {
+			f.Metadata = make(map[string]any)
+		}
+		ns := resolveNamespaceForFinding(f)
+		if ns == "" {
+			f.Metadata["namespace_type"] = "cluster"
+			continue
+		}
+		if _, isSystem := systemNamespaces[ns]; isSystem {
+			f.Metadata["namespace_type"] = "system"
+		} else {
+			f.Metadata["namespace_type"] = "workload"
+		}
+	}
+}
+
+// resolveNamespaceForFinding extracts the namespace string for a finding.
+// Returns "" for cluster-scoped findings that have no namespace.
+func resolveNamespaceForFinding(f *models.Finding) string {
+	// Namespace findings: ResourceID is the namespace name itself.
+	if f.ResourceType == models.ResourceK8sNamespace {
+		return f.ResourceID
+	}
+	// Pod, Service, SA and other namespace-scoped resources store namespace
+	// in Metadata["namespace"].
+	if ns, ok := f.Metadata["namespace"].(string); ok && ns != "" {
+		return ns
+	}
+	// No namespace available: cluster-scoped (K8S_CLUSTER, K8S_NODE, EKS rules).
+	return ""
+}
+
+// excludeSystemFindings removes findings tagged namespace_type="system".
+// Cluster-scoped ("cluster") and workload ("workload") findings are retained.
+func excludeSystemFindings(findings []models.Finding) []models.Finding {
+	out := make([]models.Finding, 0, len(findings))
+	for _, f := range findings {
+		if nst, ok := f.Metadata["namespace_type"].(string); ok && nst == "system" {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 // convertClusterData translates the provider-layer ClusterData into the
 // engine-layer KubernetesClusterData used by rule evaluation.
 func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
@@ -217,22 +296,39 @@ func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
 		})
 	}
 	for _, ns := range data.Namespaces {
+		nsLabels := make(map[string]string, len(ns.Labels))
+		for key, val := range ns.Labels {
+			nsLabels[key] = val
+		}
 		k.Namespaces = append(k.Namespaces, models.KubernetesNamespaceData{
 			Name:          ns.Name,
 			HasLimitRange: ns.HasLimitRange,
+			Labels:        nsLabels,
 		})
 	}
 	for _, pod := range data.Pods {
 		pd := models.KubernetesPodData{
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
+			Name:               pod.Name,
+			Namespace:          pod.Namespace,
+			HostNetwork:        pod.HostNetwork,
+			HostPID:            pod.HostPID,
+			HostIPC:            pod.HostIPC,
+			ServiceAccountName: pod.ServiceAccountName,
 		}
 		for _, c := range pod.Containers {
+			var addedCaps []string
+			if len(c.AddedCapabilities) > 0 {
+				addedCaps = append(addedCaps, c.AddedCapabilities...)
+			}
 			pd.Containers = append(pd.Containers, models.KubernetesContainerData{
-				Name:             c.Name,
-				Privileged:       c.Privileged,
-				HasCPURequest:    c.HasCPURequest,
-				HasMemoryRequest: c.HasMemoryRequest,
+				Name:               c.Name,
+				Privileged:         c.Privileged,
+				HasCPURequest:      c.HasCPURequest,
+				HasMemoryRequest:   c.HasMemoryRequest,
+				RunAsNonRoot:       c.RunAsNonRoot,
+				RunAsUser:          c.RunAsUser,
+				AddedCapabilities:  addedCaps,
+				SeccompProfileType: c.SeccompProfileType,
 			})
 		}
 		k.Pods = append(k.Pods, pd)
@@ -247,6 +343,13 @@ func convertClusterData(data *kube.ClusterData) *models.KubernetesClusterData {
 			Namespace:   svc.Namespace,
 			Type:        svc.Type,
 			Annotations: annotations,
+		})
+	}
+	for _, sa := range data.ServiceAccounts {
+		k.ServiceAccounts = append(k.ServiceAccounts, models.KubernetesServiceAccountData{
+			Name:                         sa.Name,
+			Namespace:                    sa.Namespace,
+			AutomountServiceAccountToken: sa.AutomountServiceAccountToken,
 		})
 	}
 	return k

@@ -30,11 +30,12 @@ const (
 	ResourceAWSRootAccount   ResourceType = "ROOT_ACCOUNT"
 
 	// Kubernetes resource types
-	ResourceK8sNode      ResourceType = "K8S_NODE"
-	ResourceK8sNamespace ResourceType = "K8S_NAMESPACE"
-	ResourceK8sCluster   ResourceType = "K8S_CLUSTER"
-	ResourceK8sPod       ResourceType = "K8S_POD"
-	ResourceK8sService   ResourceType = "K8S_SERVICE"
+	ResourceK8sNode           ResourceType = "K8S_NODE"
+	ResourceK8sNamespace      ResourceType = "K8S_NAMESPACE"
+	ResourceK8sCluster        ResourceType = "K8S_CLUSTER"
+	ResourceK8sPod            ResourceType = "K8S_POD"
+	ResourceK8sService        ResourceType = "K8S_SERVICE"
+	ResourceK8sServiceAccount ResourceType = "K8S_SERVICEACCOUNT"
 )
 
 // Finding is a single detected waste or inefficiency issue.
