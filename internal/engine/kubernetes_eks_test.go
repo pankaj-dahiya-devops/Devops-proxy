@@ -299,15 +299,17 @@ func TestKubernetesEngine_GKE_ProviderDetected(t *testing.T) {
 	}
 }
 
-// TestKubernetesEngine_EKS_RulesFire verifies that EKS-specific rules fire
-// for a cluster with public endpoint and no OIDC provider.
+// TestKubernetesEngine_EKS_RulesFire verifies that Phase 5A EKS-specific rules
+// fire for a cluster with a public endpoint, no required log types, and no encryption.
 func TestKubernetesEngine_EKS_RulesFire(t *testing.T) {
 	eksData := &models.KubernetesEKSData{
 		ClusterName:          "bad-cluster",
 		Region:               "us-east-1",
-		EndpointPublicAccess: true,  // fires EKS_PUBLIC_ENDPOINT_ENABLED
-		LoggingEnabled:       false, // fires EKS_CLUSTER_LOGGING_DISABLED
-		OIDCIssuer:           "",    // fires EKS_OIDC_PROVIDER_MISSING
+		EndpointPublicAccess: true,        // fires EKS_PUBLIC_ENDPOINT_ENABLED
+		LoggingEnabled:       false,       // kept for compat; new rule uses LoggingTypes
+		LoggingTypes:         nil,         // fires EKS_CONTROL_PLANE_LOGGING_DISABLED
+		EncryptionEnabled:    false,       // fires EKS_ENCRYPTION_DISABLED
+		OIDCIssuer:           "https://oidc.eks.us-east-1.amazonaws.com/id/X",
 	}
 	fakeClient := fake.NewSimpleClientset(
 		eksNode("node-1", "us-east-1a"),
@@ -341,8 +343,8 @@ func TestKubernetesEngine_EKS_RulesFire(t *testing.T) {
 	}
 	for _, want := range []string{
 		"EKS_PUBLIC_ENDPOINT_ENABLED",
-		"EKS_CLUSTER_LOGGING_DISABLED",
-		"EKS_OIDC_PROVIDER_MISSING",
+		"EKS_CONTROL_PLANE_LOGGING_DISABLED",
+		"EKS_ENCRYPTION_DISABLED",
 	} {
 		if !allRuleIDs[want] {
 			t.Errorf("expected EKS rule %q in findings or merged rules; not found", want)
@@ -358,6 +360,8 @@ func TestKubernetesEngine_EKS_NoRulesFire_WhenSecure(t *testing.T) {
 		Region:               "us-east-1",
 		EndpointPublicAccess: false,
 		LoggingEnabled:       true,
+		LoggingTypes:         []string{"api", "audit", "authenticator"}, // all required types present
+		EncryptionEnabled:    true,
 		OIDCIssuer:           "https://oidc.eks.us-east-1.amazonaws.com/id/OK",
 	}
 	fakeClient := fake.NewSimpleClientset(
@@ -377,8 +381,8 @@ func TestKubernetesEngine_EKS_NoRulesFire_WhenSecure(t *testing.T) {
 
 	for _, f := range report.Findings {
 		if f.RuleID == "EKS_PUBLIC_ENDPOINT_ENABLED" ||
-			f.RuleID == "EKS_CLUSTER_LOGGING_DISABLED" ||
-			f.RuleID == "EKS_OIDC_PROVIDER_MISSING" {
+			f.RuleID == "EKS_CONTROL_PLANE_LOGGING_DISABLED" ||
+			f.RuleID == "EKS_ENCRYPTION_DISABLED" {
 			t.Errorf("unexpected EKS finding %q for a secure cluster", f.RuleID)
 		}
 	}
@@ -407,8 +411,8 @@ func TestKubernetesEngine_EKS_CollectorFailure(t *testing.T) {
 	// No EKS-specific rule findings should appear (EKSData is nil after failure).
 	for _, f := range report.Findings {
 		if f.RuleID == "EKS_PUBLIC_ENDPOINT_ENABLED" ||
-			f.RuleID == "EKS_CLUSTER_LOGGING_DISABLED" ||
-			f.RuleID == "EKS_OIDC_PROVIDER_MISSING" {
+			f.RuleID == "EKS_CONTROL_PLANE_LOGGING_DISABLED" ||
+			f.RuleID == "EKS_ENCRYPTION_DISABLED" {
 			t.Errorf("unexpected EKS finding %q when collector failed", f.RuleID)
 		}
 	}
@@ -444,9 +448,115 @@ func TestKubernetesEngine_NonEKS_EKSRulesNotEvaluated(t *testing.T) {
 
 	for _, f := range report.Findings {
 		if f.RuleID == "EKS_PUBLIC_ENDPOINT_ENABLED" ||
-			f.RuleID == "EKS_CLUSTER_LOGGING_DISABLED" ||
-			f.RuleID == "EKS_OIDC_PROVIDER_MISSING" {
+			f.RuleID == "EKS_CONTROL_PLANE_LOGGING_DISABLED" ||
+			f.RuleID == "EKS_ENCRYPTION_DISABLED" {
 			t.Errorf("EKS rule %q fired on non-EKS cluster (GKE)", f.RuleID)
 		}
+	}
+}
+
+// ── Phase 5A engine integration tests ────────────────────────────────────────
+
+// TestKubernetesEngine_EKS_EncryptionDisabled_IsCritical verifies that
+// EKS_ENCRYPTION_DISABLED produces a CRITICAL severity finding.
+func TestKubernetesEngine_EKS_EncryptionDisabled_IsCritical(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "no-enc-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    false, // fires EKS_ENCRYPTION_DISABLED (CRITICAL)
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-no-enc"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	// Collect all rule IDs across merged findings.
+	allRuleIDs := make(map[string]bool)
+	for _, f := range report.Findings {
+		allRuleIDs[f.RuleID] = true
+		if raw, ok := f.Metadata["rules"]; ok {
+			if ruleList, ok := raw.([]string); ok {
+				for _, id := range ruleList {
+					allRuleIDs[id] = true
+				}
+			}
+		}
+	}
+	if !allRuleIDs["EKS_ENCRYPTION_DISABLED"] {
+		t.Fatal("expected EKS_ENCRYPTION_DISABLED finding; not found")
+	}
+	// Verify the merged finding carrying EKS_ENCRYPTION_DISABLED is at least CRITICAL.
+	for _, f := range report.Findings {
+		ids := ruleIDsForFinding(&f)
+		hasEnc := false
+		for _, id := range ids {
+			if id == "EKS_ENCRYPTION_DISABLED" {
+				hasEnc = true
+			}
+		}
+		if hasEnc && f.Severity != models.SeverityCritical {
+			t.Errorf("EKS_ENCRYPTION_DISABLED finding severity = %q; want CRITICAL", f.Severity)
+		}
+	}
+}
+
+// TestKubernetesEngine_EKS_PartialLogging_Fires verifies that
+// EKS_CONTROL_PLANE_LOGGING_DISABLED fires when only some required log types
+// are enabled (e.g. "api" and "audit" but not "authenticator").
+func TestKubernetesEngine_EKS_PartialLogging_Fires(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "partial-log-cluster",
+		Region:               "eu-west-1",
+		EndpointPublicAccess: false,
+		LoggingEnabled:       true,
+		LoggingTypes:         []string{"api", "audit"}, // missing "authenticator"
+		EncryptionEnabled:    true,
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "eu-west-1a"),
+		eksNode("node-2", "eu-west-1b"),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "eks-partial-log"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	allRuleIDs := make(map[string]bool)
+	for _, f := range report.Findings {
+		allRuleIDs[f.RuleID] = true
+		if raw, ok := f.Metadata["rules"]; ok {
+			if ruleList, ok := raw.([]string); ok {
+				for _, id := range ruleList {
+					allRuleIDs[id] = true
+				}
+			}
+		}
+	}
+	if !allRuleIDs["EKS_CONTROL_PLANE_LOGGING_DISABLED"] {
+		t.Error("expected EKS_CONTROL_PLANE_LOGGING_DISABLED when authenticator log type is missing")
+	}
+	if allRuleIDs["EKS_PUBLIC_ENDPOINT_ENABLED"] {
+		t.Error("EKS_PUBLIC_ENDPOINT_ENABLED should not fire (endpoint is private)")
+	}
+	if allRuleIDs["EKS_ENCRYPTION_DISABLED"] {
+		t.Error("EKS_ENCRYPTION_DISABLED should not fire (encryption is enabled)")
 	}
 }

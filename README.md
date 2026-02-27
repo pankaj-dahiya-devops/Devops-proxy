@@ -480,6 +480,18 @@ Example JSON output for a chain-1 finding:
 }
 ```
 
+#### EKS Governance Rules (Phase 5A)
+
+When the cluster is detected as EKS and the AWS EKS API is reachable, three additional CRITICAL/HIGH rules are evaluated:
+
+| Rule ID | Severity | Condition |
+|---------|----------|-----------|
+| `EKS_ENCRYPTION_DISABLED` | **CRITICAL** | `cluster.EncryptionConfig` is empty — secrets not encrypted at rest |
+| `EKS_PUBLIC_ENDPOINT_ENABLED` | **HIGH** | API server endpoint is publicly accessible from the internet |
+| `EKS_CONTROL_PLANE_LOGGING_DISABLED` | **HIGH** | Not all of `api`, `audit`, `authenticator` log types are enabled |
+
+EKS rules produce cluster-scoped findings (`namespace_type=cluster`) and are merged into the same finding as other cluster-level rules when they target the same resource. EKS rule evaluation is silently skipped if the AWS EKS API call fails (non-fatal).
+
 ---
 
 ### Kubernetes inspect
@@ -871,6 +883,7 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Phase 4A: Kubernetes risk correlation — 3 compound risk chains (scores 80/60/50), `risk_chain_score` + `risk_chain_reason` metadata
 - [x] Phase 4B: `summary.risk_score` — highest correlation score surfaced in `AuditSummary`; `0` when no chain fires
 - [x] Phase 4C: `--min-risk-score` flag on `dp kubernetes audit` — filter findings by minimum risk chain score; `Summary.RiskScore` unaffected
+- [x] Phase 5A: EKS governance rules — `EKS_ENCRYPTION_DISABLED` (CRITICAL), `EKS_PUBLIC_ENDPOINT_ENABLED` (HIGH), `EKS_CONTROL_PLANE_LOGGING_DISABLED` (HIGH); model extended with `LoggingTypes` and `EncryptionEnabled`
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module
