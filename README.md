@@ -375,6 +375,7 @@ my-public-bucket                           global           HIGH        S3_BUCKE
 | `--file` | string | `""` | Write full JSON report to file (does not suppress stdout output) |
 | `--policy` | string | `""` | Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists) |
 | `--exclude-system` | bool | `false` | Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease) |
+| `--min-risk-score` | int | `0` | Only include findings with a `risk_chain_score` ≥ this value (0 = include all) |
 
 #### Namespace Classification (Phase 3C)
 
@@ -426,6 +427,41 @@ Three chains are detected:
 | **50** | Single-node + critical violation | The cluster has one node (`K8S_CLUSTER_SINGLE_NODE`) **and** a CRITICAL severity finding exists |
 
 When a finding participates in multiple chains, the highest score is kept. Severity and sort order are unchanged.
+
+The highest score across all correlated findings is also surfaced in `report.summary.risk_score` for easy machine consumption:
+
+```json
+{
+  "summary": {
+    "total_findings": 4,
+    "critical_findings": 1,
+    "high_findings": 2,
+    "medium_findings": 1,
+    "low_findings": 0,
+    "total_estimated_monthly_savings_usd": 0,
+    "risk_score": 80
+  }
+}
+```
+
+`risk_score` is `0` when no risk chain fires. It reflects the pre-policy merged finding set — computed before `--min-risk-score` filtering — so the summary always shows the true cluster risk level regardless of what the caller chose to display.
+
+#### Filtering by Risk Score (Phase 4C)
+
+Use `--min-risk-score` to narrow the report to only findings that participate in a risk chain at or above the given threshold:
+
+```bash
+# Show only findings with a risk chain score >= 60 (chains 1 and 2)
+./dp kubernetes audit --min-risk-score 60
+
+# Show only the highest-priority chain (score >= 80, chain 1 only)
+./dp kubernetes audit --min-risk-score 80 --output json
+
+# Combine with --exclude-system to focus on workload risk chains only
+./dp kubernetes audit --min-risk-score 60 --exclude-system
+```
+
+Findings with no chain score (`risk_chain_score` == 0) are always excluded when `--min-risk-score > 0`. `Summary.RiskScore` is computed on the pre-filter set and is unaffected by this flag.
 
 Example JSON output for a chain-1 finding:
 
@@ -833,6 +869,8 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Phase 3C: Namespace classification — every K8s finding tagged `namespace_type=system|workload|cluster` in metadata
 - [x] Phase 3C: `--exclude-system` flag on `dp kubernetes audit` to filter out system-namespace findings
 - [x] Phase 4A: Kubernetes risk correlation — 3 compound risk chains (scores 80/60/50), `risk_chain_score` + `risk_chain_reason` metadata
+- [x] Phase 4B: `summary.risk_score` — highest correlation score surfaced in `AuditSummary`; `0` when no chain fires
+- [x] Phase 4C: `--min-risk-score` flag on `dp kubernetes audit` — filter findings by minimum risk chain score; `Summary.RiskScore` unaffected
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module

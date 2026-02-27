@@ -62,6 +62,34 @@ func buildNamespaceRuleIndex(findings []models.Finding) map[string]map[string]st
 	return index
 }
 
+// filterByMinRiskScore returns a new slice containing only findings whose
+// risk_chain_score is >= min. Findings with no chain score (score == 0) are
+// excluded when min > 0. The original slice is not modified.
+//
+// This filter is applied after correlateRiskChains and after the maxRiskScore
+// computation so that Summary.RiskScore reflects the full pre-filter picture.
+func filterByMinRiskScore(findings []models.Finding, min int) []models.Finding {
+	out := make([]models.Finding, 0, len(findings))
+	for _, f := range findings {
+		if getRiskScore(f) >= min {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// getRiskScore returns the risk_chain_score stored in f.Metadata, or 0 if the
+// key is absent or not an int. Used to compute the report-level summary score.
+func getRiskScore(f models.Finding) int {
+	if f.Metadata == nil {
+		return 0
+	}
+	if score, ok := f.Metadata["risk_chain_score"].(int); ok {
+		return score
+	}
+	return 0
+}
+
 // correlateRiskChains annotates findings that participate in compound risk
 // patterns with Metadata["risk_chain_score"] (int) and
 // Metadata["risk_chain_reason"] (string).

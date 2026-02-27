@@ -776,13 +776,14 @@ func printClusterInspect(w io.Writer, data *kube.ClusterData) {
 // newKubernetesAuditCmd implements dp kubernetes audit.
 func newKubernetesAuditCmd() *cobra.Command {
 	var (
-		contextName   string
-		outputFmt     string
-		summary       bool
-		filePath      string
-		policyPath    string
-		color         bool
+		contextName  string
+		outputFmt    string
+		summary      bool
+		filePath     string
+		policyPath   string
+		color        bool
 		excludeSystem bool
+		minRiskScore int
 	)
 
 	cmd := &cobra.Command{
@@ -819,6 +820,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 				ContextName:   contextName,
 				ReportFormat:  engine.ReportFormat(outputFmt),
 				ExcludeSystem: excludeSystem,
+				MinRiskScore:  minRiskScore,
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -856,6 +858,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 	cmd.Flags().StringVar(&policyPath, "policy", "", "Path to dp.yaml policy file (auto-detected if omitted and ./dp.yaml exists)")
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 	cmd.Flags().BoolVar(&excludeSystem, "exclude-system", false, "Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease)")
+	cmd.Flags().IntVar(&minRiskScore, "min-risk-score", 0, "Only include findings with a risk chain score >= this value (0 = include all)")
 
 	return cmd
 }

@@ -82,6 +82,13 @@ type KubernetesAuditOptions struct {
 	// Cluster-scoped findings (nodes, EKS-level) are always retained.
 	// Default false — all findings are included.
 	ExcludeSystem bool
+
+	// MinRiskScore, when > 0, retains only findings whose risk_chain_score is
+	// greater than or equal to this value. Findings with no chain score (0) are
+	// excluded. Summary.RiskScore is computed before this filter so it always
+	// reflects the full pre-filter risk picture.
+	// Default 0 — all findings are included regardless of chain score.
+	MinRiskScore int
 }
 
 // systemNamespaces is the canonical set of Kubernetes system namespaces.
@@ -141,8 +148,27 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 		merged = excludeSystemFindings(merged)
 	}
 	correlateRiskChains(merged) // Phase 4A: compound risk pattern detection
+
+	// Compute the highest risk_chain_score before policy filtering so the
+	// summary reflects the full pre-policy risk picture.
+	maxRiskScore := 0
+	for _, f := range merged {
+		if s := getRiskScore(f); s > maxRiskScore {
+			maxRiskScore = s
+		}
+	}
+
+	// Phase 4C: drop findings below the caller-requested minimum risk score.
+	// Must happen after maxRiskScore is captured so Summary.RiskScore is unaffected.
+	if opts.MinRiskScore > 0 {
+		merged = filterByMinRiskScore(merged, opts.MinRiskScore)
+	}
+
 	filtered := policy.ApplyPolicy(merged, "kubernetes", e.policy)
 	sortFindings(filtered)
+
+	summary := computeSummary(filtered)
+	summary.RiskScore = maxRiskScore
 
 	return &models.AuditReport{
 		ReportID:    fmt.Sprintf("k8s-%d", time.Now().UnixNano()),
@@ -151,7 +177,7 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 		Profile:     info.ContextName,
 		AccountID:   "",
 		Regions:     []string{info.ContextName},
-		Summary:     computeSummary(filtered),
+		Summary:     summary,
 		Findings:    filtered,
 		Metadata: map[string]any{
 			"cluster_provider": k8sData.ClusterProvider,
