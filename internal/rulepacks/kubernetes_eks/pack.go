@@ -5,11 +5,14 @@ package kubernetes_eks
 
 import "github.com/pankaj-dahiya-devops/Devops-proxy/internal/rules"
 
-// New returns the EKS-specific governance rules ordered by severity.
+// New returns the Phase 5A EKS-specific governance rules ordered by severity:
+//   - EKS_ENCRYPTION_DISABLED          (CRITICAL) — secrets not encrypted at rest
+//   - EKS_PUBLIC_ENDPOINT_ENABLED      (HIGH)     — API server endpoint publicly accessible
+//   - EKS_CONTROL_PLANE_LOGGING_DISABLED (HIGH)   — api/audit/authenticator logs not all enabled
 func New() []rules.Rule {
 	return []rules.Rule{
-		rules.EKSPublicEndpointRule{},        // HIGH
-		rules.EKSOIDCProviderMissingRule{},   // HIGH
-		rules.EKSClusterLoggingDisabledRule{}, // MEDIUM
+		rules.EKSEncryptionDisabledRule{},              // CRITICAL
+		rules.EKSPublicEndpointRule{},                  // HIGH
+		rules.EKSControlPlaneLoggingDisabledRule{},     // HIGH
 	}
 }

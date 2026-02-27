@@ -142,6 +142,16 @@ type KubernetesEKSData struct {
 	// (audit, api, authenticator, controllerManager, scheduler).
 	LoggingEnabled bool `json:"logging_enabled"`
 
+	// LoggingTypes is the list of currently enabled control-plane log type strings
+	// (e.g. "api", "audit", "authenticator", "controllerManager", "scheduler").
+	// An empty slice means no log types are enabled.
+	LoggingTypes []string `json:"logging_types,omitempty"`
+
+	// EncryptionEnabled is true when at least one encryption provider is configured
+	// for Kubernetes Secrets (cluster.EncryptionConfig is non-empty).
+	// When false, secrets stored in etcd are not encrypted at rest.
+	EncryptionEnabled bool `json:"encryption_enabled"`
+
 	// OIDCIssuer is the OIDC provider issuer URL associated with the cluster
 	// (cluster.Identity.Oidc.Issuer). Empty when no OIDC provider is configured.
 	OIDCIssuer string `json:"oidc_issuer,omitempty"`

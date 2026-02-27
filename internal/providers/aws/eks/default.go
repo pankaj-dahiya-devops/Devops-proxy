@@ -57,9 +57,15 @@ func collectWithClient(ctx context.Context, client eksAPIClient, clusterName, re
 		for _, logConf := range out.Cluster.Logging.ClusterLogging {
 			if logConf.Enabled != nil && *logConf.Enabled && len(logConf.Types) > 0 {
 				data.LoggingEnabled = true
-				break
+				for _, lt := range logConf.Types {
+					data.LoggingTypes = append(data.LoggingTypes, string(lt))
+				}
 			}
 		}
+	}
+
+	if len(out.Cluster.EncryptionConfig) > 0 {
+		data.EncryptionEnabled = true
 	}
 
 	if out.Cluster.Identity != nil && out.Cluster.Identity.Oidc != nil {
