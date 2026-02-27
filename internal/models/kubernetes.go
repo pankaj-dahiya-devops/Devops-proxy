@@ -49,6 +49,10 @@ type KubernetesServiceAccountData struct {
 	// field on the ServiceAccount. Nil means the field was not set (Kubernetes
 	// defaults to true). False means token auto-mounting is explicitly disabled.
 	AutomountServiceAccountToken *bool `json:"automount_service_account_token,omitempty"`
+
+	// Annotations is a copy of the ServiceAccount's annotation map.
+	// Used to check for the IRSA annotation (eks.amazonaws.com/role-arn).
+	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
 // KubernetesContainerData holds processed container data consumed by K8s rules.
@@ -155,6 +159,17 @@ type KubernetesEKSData struct {
 	// OIDCIssuer is the OIDC provider issuer URL associated with the cluster
 	// (cluster.Identity.Oidc.Issuer). Empty when no OIDC provider is configured.
 	OIDCIssuer string `json:"oidc_issuer,omitempty"`
+
+	// OIDCProviderARN is the IAM OIDC provider ARN associated with the cluster.
+	// Populated by matching the OIDCIssuer URL against IAM OIDC providers.
+	// Empty when no matching IAM OIDC provider exists — fires EKS_OIDC_PROVIDER_NOT_ASSOCIATED.
+	// Format: arn:aws:iam::{accountID}:oidc-provider/oidc.eks.{region}.amazonaws.com/id/{hash}
+	OIDCProviderARN string `json:"oidc_provider_arn,omitempty"`
+
+	// NodeRolePolicies is a list of overpermissive IAM policy names found on the
+	// node group IAM role (AdministratorAccess or inline policies with Action:"*").
+	// A non-empty list fires EKS_NODE_ROLE_OVERPERMISSIVE (CRITICAL).
+	NodeRolePolicies []string `json:"node_role_policies,omitempty"`
 }
 
 // KubernetesClusterData holds all cluster inventory consumed by Kubernetes rules.

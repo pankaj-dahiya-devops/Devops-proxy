@@ -229,10 +229,15 @@ func collectServiceAccounts(ctx context.Context, clientset k8sclient.Interface) 
 
 	accounts := make([]ServiceAccountInfo, 0, len(saList.Items))
 	for _, sa := range saList.Items {
+		annotations := make(map[string]string, len(sa.Annotations))
+		for k, v := range sa.Annotations {
+			annotations[k] = v
+		}
 		accounts = append(accounts, ServiceAccountInfo{
 			Name:                         sa.Name,
 			Namespace:                    sa.Namespace,
 			AutomountServiceAccountToken: sa.AutomountServiceAccountToken,
+			Annotations:                  annotations,
 		})
 	}
 	return accounts, nil
