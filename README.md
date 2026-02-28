@@ -418,13 +418,16 @@ After findings are generated, the engine runs a compound risk correlation pass. 
 | `risk_chain_score` | int | Compound risk score (higher = more dangerous) |
 | `risk_chain_reason` | string | Human-readable explanation for the chain |
 
-Three chains are detected:
+Six chains are detected:
 
 | Score | Chain | Condition |
 |-------|-------|-----------|
-| **80** | Public LB + privileged workload | A `K8S_SERVICE_PUBLIC_LOADBALANCER` service and a pod with `K8S_POD_RUN_AS_ROOT` or `K8S_POD_CAP_SYS_ADMIN` co-exist in the **same namespace** |
-| **60** | Default SA + automount | A pod uses the default ServiceAccount (`K8S_DEFAULT_SERVICEACCOUNT_USED`) and the SA has token automount enabled (`K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`) in the **same namespace** |
-| **50** | Single-node + critical violation | The cluster has one node (`K8S_CLUSTER_SINGLE_NODE`) **and** a CRITICAL severity finding exists |
+| **95** | OIDC missing + high workload risk | `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` AND any HIGH severity finding exist cluster-wide |
+| **90** | Overpermissive node + public LB | `EKS_NODE_ROLE_OVERPERMISSIVE` AND `K8S_SERVICE_PUBLIC_LOADBALANCER` exist cluster-wide |
+| **85** | No IRSA + default SA | `EKS_SERVICEACCOUNT_NO_IRSA` AND `K8S_DEFAULT_SERVICEACCOUNT_USED` co-exist in the **same namespace** |
+| **80** | Public LB + privileged workload | `K8S_SERVICE_PUBLIC_LOADBALANCER` AND (`K8S_POD_RUN_AS_ROOT` or `K8S_POD_CAP_SYS_ADMIN`) co-exist in the **same namespace** |
+| **60** | Default SA + automount | `K8S_DEFAULT_SERVICEACCOUNT_USED` AND `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT` co-exist in the **same namespace** |
+| **50** | Single-node + critical violation | `K8S_CLUSTER_SINGLE_NODE` AND any CRITICAL severity finding exists cluster-wide |
 
 When a finding participates in multiple chains, the highest score is kept. Severity and sort order are unchanged.
 
@@ -445,6 +448,53 @@ The highest score across all correlated findings is also surfaced in `report.sum
 ```
 
 `risk_score` is `0` when no risk chain fires. It reflects the pre-policy merged finding set — computed before `--min-risk-score` filtering — so the summary always shows the true cluster risk level regardless of what the caller chose to display.
+
+#### Attack Paths (Phase 6 + 7A)
+
+When `--show-risk-chains` is enabled, the engine also detects **multi-layer attack paths** — compound scenarios where multiple independent findings combine into a meaningful threat chain. Unlike risk chains (which annotate individual findings), attack paths describe end-to-end attacker journeys.
+
+Four attack paths are defined:
+
+| Path | Score | Scope | Trigger | Description |
+|------|-------|-------|---------|-------------|
+| **PATH 1** | **98** | Per-namespace | `K8S_SERVICE_PUBLIC_LOADBALANCER` + (`K8S_POD_RUN_AS_ROOT` OR `K8S_POD_CAP_SYS_ADMIN`) + (`EKS_SERVICEACCOUNT_NO_IRSA` OR `K8S_DEFAULT_SERVICEACCOUNT_USED`); optional: `EKS_NODE_ROLE_OVERPERMISSIVE` | Externally exposed privileged workload with weak identity isolation |
+| **PATH 4** | **94** | Cluster | `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED` | Public EKS control plane exposed with weak IAM and insufficient audit logging |
+| **PATH 2** | **92** | Per-namespace | `K8S_DEFAULT_SERVICEACCOUNT_USED` + `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT` + `EKS_SERVICEACCOUNT_NO_IRSA` + cluster: `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` | Service account token misuse combined with missing IRSA and OIDC |
+| **PATH 3** | **90** | Cluster | `EKS_ENCRYPTION_DISABLED` + `EKS_CONTROL_PLANE_LOGGING_DISABLED` + `K8S_CLUSTER_SINGLE_NODE` | Cluster governance protections disabled with no redundancy |
+
+**Strict rule filtering**: each attack path's `finding_ids` contains **only** findings whose primary `rule_id` is in the path's allowed set. Unrelated findings in the same namespace or cluster are never included, ensuring clean, scoped references.
+
+**Scoring hierarchy**: `Summary.RiskScore` = highest attack path score when any path is detected; falls back to highest chain score when no paths fire.
+
+```bash
+# Enable attack path and risk chain detection
+./dp kubernetes audit --show-risk-chains
+
+# Example: PATH 4 detected (score 94 overrides any chain score)
+./dp kubernetes audit --show-risk-chains --output=json | jq '.summary.risk_score'
+# 94
+```
+
+Example JSON output with attack paths:
+
+```json
+{
+  "summary": {
+    "total_findings": 5,
+    "critical_findings": 1,
+    "high_findings": 3,
+    "risk_score": 94,
+    "attack_paths": [
+      {
+        "score": 94,
+        "layers": ["Control Plane Exposure", "IAM Over-Permission", "Observability Gap"],
+        "finding_ids": ["EKS_PUBLIC_ENDPOINT_ENABLED:my-cluster", "EKS_NODE_ROLE_OVERPERMISSIVE:my-cluster", "EKS_CONTROL_PLANE_LOGGING_DISABLED:my-cluster"],
+        "description": "Public EKS control plane exposed with weak IAM and insufficient audit logging."
+      }
+    ]
+  }
+}
+```
 
 #### Filtering by Risk Score (Phase 4C)
 
@@ -884,6 +934,13 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Phase 4B: `summary.risk_score` — highest correlation score surfaced in `AuditSummary`; `0` when no chain fires
 - [x] Phase 4C: `--min-risk-score` flag on `dp kubernetes audit` — filter findings by minimum risk chain score; `Summary.RiskScore` unaffected
 - [x] Phase 5A: EKS governance rules — `EKS_ENCRYPTION_DISABLED` (CRITICAL), `EKS_PUBLIC_ENDPOINT_ENABLED` (HIGH), `EKS_CONTROL_PLANE_LOGGING_DISABLED` (HIGH); model extended with `LoggingTypes` and `EncryptionEnabled`
+- [x] Phase 5B: EKS identity governance — `EKS_NODE_ROLE_OVERPERMISSIVE` (CRITICAL), `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` (HIGH), `EKS_SERVICEACCOUNT_NO_IRSA` (HIGH)
+- [x] Phase 5C: EKS risk chains 4/5/6 (scores 90/85/95) added to `correlateRiskChains`
+- [x] Phase 5D: `--show-risk-chains` flag; `buildRiskChains` groups findings into `summary.risk_chains`; `renderRiskChainTable` renders attack paths before risk chains
+- [x] Phase 6: Multi-layer attack paths — PATH 1 (98), PATH 2 (92), PATH 3 (90); `Summary.AttackPaths`; RiskScore override (attack paths beat chains)
+- [x] Phase 6.1: Attack paths refactored to namespace-scoped dual-index; PATH 1/2 produce one entry per qualifying namespace
+- [x] Phase 6.2: Strict rule-scoped filtering — dual detection/collection index design; FindingIDs contain only allowed primary rule IDs per path
+- [x] Phase 7A: PATH 4 (score 94) — EKS Control Plane Exposure; cluster-scoped; requires `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED`; strict cluster-only filtering; 7 new tests
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module
