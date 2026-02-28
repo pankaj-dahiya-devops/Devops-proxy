@@ -146,6 +146,7 @@ The correlation engine lives in `internal/engine/kubernetes_correlation.go` and 
 | 6.2 | Strict rule-scoped filtering (primary-only collection) | kubernetes_correlation.go |
 | 7A | PATH 4 — EKS Control Plane Exposure | kubernetes_correlation.go |
 | 7B | PATH 5 — Cross-Cloud Identity Escalation | kubernetes_correlation.go |
+| 8 | `--explain-path <score>` — attack path explanation renderer | render/explain.go |
 
 ### Namespace Classification
 
@@ -240,13 +241,40 @@ else:
 
 Computed pre-policy, pre-filter so `Summary.RiskScore` always reflects true cluster risk.
 
+## Attack Path Rendering Layer (Phase 8)
+
+`internal/render/explain.go` is a **pure rendering package** — no correlation logic, no scoring, no AWS/Kubernetes API calls. It consumes a pre-computed `[]models.AttackPath` and `[]models.Finding` (from `AuditReport`) and produces human-readable output.
+
+### Functions
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `FindPathByScore` | `(paths []AttackPath, score int) *AttackPath` | Linear scan; returns pointer to first matching path or nil |
+| `RenderAttackPathExplanation` | `(w io.Writer, path AttackPath, findings []Finding)` | Strict-filtered table renderer; groups by `f.RuleID` sorted ascending |
+| `WriteExplainJSON` | `(w io.Writer, path *AttackPath, score int) error` | `{"attack_path":{…}}` or `{"error":"…"}` as indented JSON |
+
+### Strict Filtering Guarantee
+
+`RenderAttackPathExplanation` only renders findings whose `Finding.ID` appears in `path.FindingIDs`. Findings present in the report but not referenced by the path are silently excluded. This mirrors the collection-index guarantee from `buildAttackPaths`.
+
+### CLI Wiring (`cmd/dp/commands.go`)
+
+```
+--explain-path <score>   (requires --show-risk-chains)
+```
+
+- `validateExplainFlags(explainScore, showRiskChains)` — returns error when `explainScore > 0 && !showRiskChains`
+- Dispatch executes **after** file write; **before** normal `renderKubernetesAuditOutput`
+- Early return after explain output: exit 0, no policy enforcement, no exit-code-1
+
 ## Engine Layering Philosophy
 
 1. **Providers** — data only; no analysis
 2. **Rules** — deterministic evaluation; no I/O
 3. **Engine** — orchestrates collect → evaluate → merge → correlate → filter → sort → report
-4. **CLI** — renders the report; no business logic
-5. **LLM** — optional summarization only; never produces findings
+4. **Render** — pure presentation layer; consumes `AuditReport`; no business logic (`internal/render`)
+5. **CLI** — wires flags to engine and render; no business logic
+6. **LLM** — optional summarization only; never produces findings
 
 This layering ensures the engine can be tested in isolation, reused as a library, and extended without touching the CLI.
 
