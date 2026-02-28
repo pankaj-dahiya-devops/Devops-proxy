@@ -94,7 +94,7 @@ func getRiskScore(f models.Finding) int {
 // patterns with Metadata["risk_chain_score"] (int) and
 // Metadata["risk_chain_reason"] (string).
 //
-// Three risk chains are detected:
+// Six risk chains are detected:
 //
 //	Chain 1 (score 80): A public LoadBalancer service
 //	  (K8S_SERVICE_PUBLIC_LOADBALANCER) and a pod with K8S_POD_RUN_AS_ROOT or
@@ -109,6 +109,21 @@ func getRiskScore(f models.Finding) int {
 //	Chain 3 (score 50): The cluster has a single node (K8S_CLUSTER_SINGLE_NODE)
 //	  and at least one CRITICAL severity finding exists.
 //	  Reason: "Single-node cluster with critical pod security violation"
+//
+//	Chain 4 (score 90): EKS node group IAM role is overpermissive
+//	  (EKS_NODE_ROLE_OVERPERMISSIVE) and a public LoadBalancer service exists
+//	  (K8S_SERVICE_PUBLIC_LOADBALANCER) anywhere in the cluster.
+//	  Reason: "Public service exposed in cluster with over-permissive node IAM role."
+//
+//	Chain 5 (score 85): A ServiceAccount lacks IRSA annotation
+//	  (EKS_SERVICEACCOUNT_NO_IRSA) and the default ServiceAccount is used
+//	  (K8S_DEFAULT_SERVICEACCOUNT_USED) in the same namespace.
+//	  Reason: "Default service account used without IRSA."
+//
+//	Chain 6 (score 95): The cluster lacks an IAM OIDC provider
+//	  (EKS_OIDC_PROVIDER_NOT_ASSOCIATED) and at least one HIGH severity finding
+//	  exists in the cluster.
+//	  Reason: "Cluster lacks OIDC provider and has high-risk workload findings."
 //
 // When multiple chains apply to the same finding, the highest score is kept.
 // Severity and sort order are not affected.
@@ -126,6 +141,11 @@ func correlateRiskChains(findings []models.Finding) {
 
 	hasSingleNode := false
 	hasCritical := false
+	hasNodeRoleOverpermissive := false
+	hasPublicLB := false
+	hasOIDCNotAssociated := false
+	hasHighSeverity := false
+
 	for i := range findings {
 		f := &findings[i]
 		ids := ruleIDsForFinding(f)
@@ -134,6 +154,18 @@ func correlateRiskChains(findings []models.Finding) {
 		}
 		if f.Severity == models.SeverityCritical {
 			hasCritical = true
+		}
+		if idsContain(ids, "EKS_NODE_ROLE_OVERPERMISSIVE") {
+			hasNodeRoleOverpermissive = true
+		}
+		if idsContain(ids, "K8S_SERVICE_PUBLIC_LOADBALANCER") {
+			hasPublicLB = true
+		}
+		if idsContain(ids, "EKS_OIDC_PROVIDER_NOT_ASSOCIATED") {
+			hasOIDCNotAssociated = true
+		}
+		if f.Severity == models.SeverityHigh {
+			hasHighSeverity = true
 		}
 	}
 
@@ -186,6 +218,47 @@ func correlateRiskChains(findings []models.Finding) {
 				if 50 > bestScore {
 					bestScore = 50
 					bestReason = "Single-node cluster with critical pod security violation"
+				}
+			}
+		}
+
+		// Chain 4 (EKS Phase 5C): EKS_NODE_ROLE_OVERPERMISSIVE + K8S_SERVICE_PUBLIC_LOADBALANCER
+		// anywhere in the cluster (global scope). Score 90.
+		{
+			isNodeRole := idsContain(ids, "EKS_NODE_ROLE_OVERPERMISSIVE")
+			isLB := idsContain(ids, "K8S_SERVICE_PUBLIC_LOADBALANCER")
+			if (isNodeRole || isLB) && hasNodeRoleOverpermissive && hasPublicLB {
+				if 90 > bestScore {
+					bestScore = 90
+					bestReason = "Public service exposed in cluster with over-permissive node IAM role."
+				}
+			}
+		}
+
+		// Chain 5 (EKS Phase 5C): EKS_SERVICEACCOUNT_NO_IRSA + K8S_DEFAULT_SERVICEACCOUNT_USED
+		// in the same namespace. Score 85.
+		if ns != "" {
+			isNoIRSA := idsContain(ids, "EKS_SERVICEACCOUNT_NO_IRSA")
+			isDefaultSAUsed := idsContain(ids, "K8S_DEFAULT_SERVICEACCOUNT_USED")
+			nsHasNoIRSA := nsIndexHas(nsIndex, ns, "EKS_SERVICEACCOUNT_NO_IRSA")
+			nsHasDefaultSAUsed := nsIndexHas(nsIndex, ns, "K8S_DEFAULT_SERVICEACCOUNT_USED")
+			if (isNoIRSA && nsHasDefaultSAUsed) || (isDefaultSAUsed && nsHasNoIRSA) {
+				if 85 > bestScore {
+					bestScore = 85
+					bestReason = "Default service account used without IRSA."
+				}
+			}
+		}
+
+		// Chain 6 (EKS Phase 5C): EKS_OIDC_PROVIDER_NOT_ASSOCIATED + any HIGH severity finding
+		// anywhere in the cluster (global scope). Score 95.
+		{
+			isOIDCNotAssociated := idsContain(ids, "EKS_OIDC_PROVIDER_NOT_ASSOCIATED")
+			isHigh := f.Severity == models.SeverityHigh
+			if (isOIDCNotAssociated || isHigh) && hasOIDCNotAssociated && hasHighSeverity {
+				if 95 > bestScore {
+					bestScore = 95
+					bestReason = "Cluster lacks OIDC provider and has high-risk workload findings."
 				}
 			}
 		}

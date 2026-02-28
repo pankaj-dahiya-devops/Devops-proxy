@@ -1042,3 +1042,447 @@ func TestCorrelationEngine_MinRiskScore_SortingUnaffected(t *testing.T) {
 		}
 	}
 }
+
+// ── Phase 5C: EKS Identity Risk Correlation — direct unit tests ───────────────
+
+// TestCorrelateRiskChains_Chain4_DirectUnit verifies that chain 4 annotates
+// both EKS_NODE_ROLE_OVERPERMISSIVE and K8S_SERVICE_PUBLIC_LOADBALANCER with
+// score=90 when both exist anywhere in the cluster (global scope).
+func TestCorrelateRiskChains_Chain4_DirectUnit(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_NODE_ROLE_OVERPERMISSIVE",
+			ResourceType: models.ResourceK8sCluster,
+			ResourceID:   "eks-cluster",
+			Severity:     models.SeverityCritical,
+			// No namespace — cluster-scoped.
+		},
+		{
+			RuleID:       "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			ResourceType: models.ResourceK8sService,
+			ResourceID:   "web-svc",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+	}
+	correlateRiskChains(findings)
+
+	for _, f := range findings {
+		score, ok := f.Metadata["risk_chain_score"].(int)
+		if !ok || score != 90 {
+			t.Errorf("finding %q: risk_chain_score = %v; want 90 (chain 4)",
+				f.RuleID, f.Metadata["risk_chain_score"])
+		}
+		reason, _ := f.Metadata["risk_chain_reason"].(string)
+		if reason != "Public service exposed in cluster with over-permissive node IAM role." {
+			t.Errorf("finding %q: risk_chain_reason = %q; want chain 4 reason", f.RuleID, reason)
+		}
+	}
+}
+
+// TestCorrelateRiskChains_Chain4_Negative_NoPublicLB verifies that chain 4 does
+// NOT fire when there is an over-permissive node role but no public LB.
+func TestCorrelateRiskChains_Chain4_Negative_NoPublicLB(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_NODE_ROLE_OVERPERMISSIVE",
+			ResourceType: models.ResourceK8sCluster,
+			ResourceID:   "eks-cluster",
+			Severity:     models.SeverityCritical,
+		},
+	}
+	correlateRiskChains(findings)
+	if _, ok := findings[0].Metadata["risk_chain_score"]; ok {
+		t.Errorf("EKS_NODE_ROLE_OVERPERMISSIVE without public LB should not have chain 4 annotation; got %v",
+			findings[0].Metadata["risk_chain_score"])
+	}
+}
+
+// TestCorrelateRiskChains_Chain5_DirectUnit verifies that chain 5 annotates
+// EKS_SERVICEACCOUNT_NO_IRSA and K8S_DEFAULT_SERVICEACCOUNT_USED findings in
+// the same namespace with score=85.
+func TestCorrelateRiskChains_Chain5_DirectUnit(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_SERVICEACCOUNT_NO_IRSA",
+			ResourceType: models.ResourceK8sServiceAccount,
+			ResourceID:   "app-sa",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+		{
+			RuleID:       "K8S_DEFAULT_SERVICEACCOUNT_USED",
+			ResourceType: models.ResourceK8sPod,
+			ResourceID:   "app-pod",
+			Severity:     models.SeverityMedium,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+	}
+	correlateRiskChains(findings)
+
+	for _, f := range findings {
+		score, ok := f.Metadata["risk_chain_score"].(int)
+		if !ok || score != 85 {
+			t.Errorf("finding %q: risk_chain_score = %v; want 85 (chain 5)",
+				f.RuleID, f.Metadata["risk_chain_score"])
+		}
+		reason, _ := f.Metadata["risk_chain_reason"].(string)
+		if reason != "Default service account used without IRSA." {
+			t.Errorf("finding %q: risk_chain_reason = %q; want chain 5 reason", f.RuleID, reason)
+		}
+	}
+}
+
+// TestCorrelateRiskChains_Chain5_Negative_DifferentNamespace verifies that chain 5
+// does NOT fire when EKS_SERVICEACCOUNT_NO_IRSA and K8S_DEFAULT_SERVICEACCOUNT_USED
+// are in different namespaces.
+func TestCorrelateRiskChains_Chain5_Negative_DifferentNamespace(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_SERVICEACCOUNT_NO_IRSA",
+			ResourceType: models.ResourceK8sServiceAccount,
+			ResourceID:   "app-sa",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "team-a"},
+		},
+		{
+			RuleID:       "K8S_DEFAULT_SERVICEACCOUNT_USED",
+			ResourceType: models.ResourceK8sPod,
+			ResourceID:   "app-pod",
+			Severity:     models.SeverityMedium,
+			Metadata:     map[string]any{"namespace": "team-b"},
+		},
+	}
+	correlateRiskChains(findings)
+	for _, f := range findings {
+		if _, ok := f.Metadata["risk_chain_score"]; ok {
+			t.Errorf("finding %q in different namespace should not have chain 5 annotation; got %v",
+				f.RuleID, f.Metadata["risk_chain_score"])
+		}
+	}
+}
+
+// TestCorrelateRiskChains_Chain6_DirectUnit verifies that chain 6 annotates
+// EKS_OIDC_PROVIDER_NOT_ASSOCIATED and any HIGH severity findings with score=95
+// when both conditions exist (global scope).
+func TestCorrelateRiskChains_Chain6_DirectUnit(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_OIDC_PROVIDER_NOT_ASSOCIATED",
+			ResourceType: models.ResourceK8sCluster,
+			ResourceID:   "eks-cluster",
+			Severity:     models.SeverityHigh,
+			// No namespace — cluster-scoped.
+		},
+		{
+			RuleID:       "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			ResourceType: models.ResourceK8sService,
+			ResourceID:   "web-svc",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+	}
+	correlateRiskChains(findings)
+
+	for _, f := range findings {
+		score, ok := f.Metadata["risk_chain_score"].(int)
+		if !ok || score != 95 {
+			t.Errorf("finding %q: risk_chain_score = %v; want 95 (chain 6)",
+				f.RuleID, f.Metadata["risk_chain_score"])
+		}
+		reason, _ := f.Metadata["risk_chain_reason"].(string)
+		if reason != "Cluster lacks OIDC provider and has high-risk workload findings." {
+			t.Errorf("finding %q: risk_chain_reason = %q; want chain 6 reason", f.RuleID, reason)
+		}
+	}
+}
+
+// TestCorrelateRiskChains_Chain6_Negative_NoOIDCFinding verifies that chain 6 does
+// NOT fire when HIGH findings exist but EKS_OIDC_PROVIDER_NOT_ASSOCIATED is absent.
+func TestCorrelateRiskChains_Chain6_Negative_NoOIDCFinding(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			ResourceType: models.ResourceK8sService,
+			ResourceID:   "web-svc",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+	}
+	correlateRiskChains(findings)
+	if _, ok := findings[0].Metadata["risk_chain_score"]; ok {
+		t.Errorf("HIGH finding without OIDC finding should not have chain 6 annotation; got %v",
+			findings[0].Metadata["risk_chain_score"])
+	}
+}
+
+// TestCorrelateRiskChains_Chain6Beats4_HighestScoreWins_DirectUnit verifies that
+// when a finding qualifies for both chain 4 (score 90) and chain 6 (score 95),
+// chain 6 wins and the finding receives score=95.
+//
+// The K8S_SERVICE_PUBLIC_LOADBALANCER finding (HIGH) participates in:
+//   - Chain 4 (90): because EKS_NODE_ROLE_OVERPERMISSIVE and K8S_SERVICE_PUBLIC_LOADBALANCER both exist
+//   - Chain 6 (95): because EKS_OIDC_PROVIDER_NOT_ASSOCIATED exists and the LB finding is HIGH
+//
+// Chain 6 (95) must win.
+func TestCorrelateRiskChains_Chain6Beats4_HighestScoreWins_DirectUnit(t *testing.T) {
+	findings := []models.Finding{
+		{
+			RuleID:       "EKS_NODE_ROLE_OVERPERMISSIVE",
+			ResourceType: models.ResourceK8sCluster,
+			ResourceID:   "eks-cluster",
+			Severity:     models.SeverityCritical,
+		},
+		{
+			RuleID:       "EKS_OIDC_PROVIDER_NOT_ASSOCIATED",
+			ResourceType: models.ResourceK8sCluster,
+			ResourceID:   "eks-cluster-oidc",
+			Severity:     models.SeverityHigh,
+		},
+		{
+			RuleID:       "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			ResourceType: models.ResourceK8sService,
+			ResourceID:   "web-svc",
+			Severity:     models.SeverityHigh,
+			Metadata:     map[string]any{"namespace": "prod"},
+		},
+	}
+	correlateRiskChains(findings)
+
+	for _, f := range findings {
+		if f.RuleID != "K8S_SERVICE_PUBLIC_LOADBALANCER" {
+			continue
+		}
+		score, ok := f.Metadata["risk_chain_score"].(int)
+		if !ok || score != 95 {
+			t.Errorf("K8S_SERVICE_PUBLIC_LOADBALANCER: risk_chain_score = %v; want 95 (chain 6 beats chain 4)",
+				f.Metadata["risk_chain_score"])
+		}
+		reason, _ := f.Metadata["risk_chain_reason"].(string)
+		if reason != "Cluster lacks OIDC provider and has high-risk workload findings." {
+			t.Errorf("K8S_SERVICE_PUBLIC_LOADBALANCER: risk_chain_reason = %q; want chain 6 reason", reason)
+		}
+		return
+	}
+	t.Error("expected K8S_SERVICE_PUBLIC_LOADBALANCER finding")
+}
+
+// ── Phase 5C: EKS Identity Risk Correlation — engine integration tests ─────────
+
+// TestCorrelationEngine_Chain4_NodeRoleAndPublicLB verifies that at engine level,
+// both EKS_NODE_ROLE_OVERPERMISSIVE and K8S_SERVICE_PUBLIC_LOADBALANCER findings
+// receive risk_chain_score=90 when they co-exist in the same cluster.
+func TestCorrelationEngine_Chain4_NodeRoleAndPublicLB(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "chain4-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     []string{"AdministratorAccess"}, // fires EKS_NODE_ROLE_OVERPERMISSIVE
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		k8sService("prod", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "chain4-ctx"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	var nodeRoleAnnotated, lbAnnotated bool
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		ids := ruleIDsForFinding(f)
+		if idsContain(ids, "EKS_NODE_ROLE_OVERPERMISSIVE") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			nodeRoleAnnotated = score == 90
+		}
+		if idsContain(ids, "K8S_SERVICE_PUBLIC_LOADBALANCER") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			lbAnnotated = score == 90
+		}
+	}
+	if !nodeRoleAnnotated {
+		t.Error("EKS_NODE_ROLE_OVERPERMISSIVE finding should have risk_chain_score=90 (chain 4)")
+	}
+	if !lbAnnotated {
+		t.Error("K8S_SERVICE_PUBLIC_LOADBALANCER finding should have risk_chain_score=90 (chain 4)")
+	}
+}
+
+// TestCorrelationEngine_Chain5_NoIRSAAndDefaultSA verifies that at engine level,
+// EKS_SERVICEACCOUNT_NO_IRSA and K8S_DEFAULT_SERVICEACCOUNT_USED findings in the
+// same namespace both receive risk_chain_score=85.
+func TestCorrelationEngine_Chain5_NoIRSAAndDefaultSA(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "chain5-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "arn:aws:iam::123:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/OK",
+		NodeRolePolicies:     nil,
+	}
+
+	noAutomount := false
+	noIRSASA := &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "app-sa",
+			Namespace: "prod",
+			// No IRSA annotation → fires EKS_SERVICEACCOUNT_NO_IRSA.
+		},
+		AutomountServiceAccountToken: &noAutomount, // disable to isolate chain 5 from chain 2
+	}
+	defaultSAPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "app-pod", Namespace: "prod"},
+		Spec: corev1.PodSpec{
+			ServiceAccountName: "default", // fires K8S_DEFAULT_SERVICEACCOUNT_USED
+			Containers:         []corev1.Container{{Name: "app", Image: "nginx"}},
+		},
+	}
+
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		noIRSASA,
+		defaultSAPod,
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "chain5-ctx"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	var noIRSAAnnotated, defaultSAAnnotated bool
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		ids := ruleIDsForFinding(f)
+		if idsContain(ids, "EKS_SERVICEACCOUNT_NO_IRSA") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			noIRSAAnnotated = score == 85
+		}
+		if idsContain(ids, "K8S_DEFAULT_SERVICEACCOUNT_USED") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			defaultSAAnnotated = score == 85
+		}
+	}
+	if !noIRSAAnnotated {
+		t.Error("EKS_SERVICEACCOUNT_NO_IRSA finding should have risk_chain_score=85 (chain 5)")
+	}
+	if !defaultSAAnnotated {
+		t.Error("K8S_DEFAULT_SERVICEACCOUNT_USED finding should have risk_chain_score=85 (chain 5)")
+	}
+}
+
+// TestCorrelationEngine_Chain6_OIDCMissingAndHighFinding verifies that at engine
+// level, EKS_OIDC_PROVIDER_NOT_ASSOCIATED and any co-existing HIGH finding both
+// receive risk_chain_score=95.
+func TestCorrelationEngine_Chain6_OIDCMissingAndHighFinding(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "chain6-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "", // fires EKS_OIDC_PROVIDER_NOT_ASSOCIATED (HIGH)
+		NodeRolePolicies:     nil,
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		k8sService("prod", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "chain6-ctx"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	var oidcAnnotated, lbAnnotated bool
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		ids := ruleIDsForFinding(f)
+		if idsContain(ids, "EKS_OIDC_PROVIDER_NOT_ASSOCIATED") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			oidcAnnotated = score == 95
+		}
+		if idsContain(ids, "K8S_SERVICE_PUBLIC_LOADBALANCER") {
+			score, _ := f.Metadata["risk_chain_score"].(int)
+			lbAnnotated = score == 95
+		}
+	}
+	if !oidcAnnotated {
+		t.Error("EKS_OIDC_PROVIDER_NOT_ASSOCIATED finding should have risk_chain_score=95 (chain 6)")
+	}
+	if !lbAnnotated {
+		t.Error("K8S_SERVICE_PUBLIC_LOADBALANCER finding should have risk_chain_score=95 (chain 6)")
+	}
+}
+
+// TestCorrelationEngine_Chain6Beats4_HighestScoreWins verifies that when both
+// chain 4 (score 90) and chain 6 (score 95) apply to the same finding, chain 6
+// wins. The K8S_SERVICE_PUBLIC_LOADBALANCER finding participates in both chains
+// but must receive score=95.
+func TestCorrelationEngine_Chain6Beats4_HighestScoreWins(t *testing.T) {
+	eksData := &models.KubernetesEKSData{
+		ClusterName:          "chain-wins-cluster",
+		Region:               "us-east-1",
+		EndpointPublicAccess: false,
+		LoggingTypes:         []string{"api", "audit", "authenticator"},
+		EncryptionEnabled:    true,
+		OIDCProviderARN:      "",                                // chain 6 trigger: no OIDC
+		NodeRolePolicies:     []string{"AdministratorAccess"},  // chain 4 trigger: over-permissive
+	}
+	fakeClient := fake.NewSimpleClientset(
+		eksNode("node-1", "us-east-1a"),
+		eksNode("node-2", "us-east-1b"),
+		k8sNamespace("prod"),
+		k8sService("prod", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+	)
+	provider := &fakeKubeProvider{
+		clientset: fakeClient,
+		info:      kube.ClusterInfo{ContextName: "chain-wins-ctx"},
+	}
+
+	eng := newEKSEngine(provider, &fakeEKSCollector{data: eksData})
+	report, err := eng.RunAudit(context.Background(), KubernetesAuditOptions{})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+
+	// The LB finding is HIGH and participates in both chain 4 (90) and chain 6 (95).
+	// Chain 6 must win.
+	lbScore := -1
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		if idsContain(ruleIDsForFinding(f), "K8S_SERVICE_PUBLIC_LOADBALANCER") {
+			lbScore, _ = f.Metadata["risk_chain_score"].(int)
+		}
+	}
+	if lbScore != 95 {
+		t.Errorf("K8S_SERVICE_PUBLIC_LOADBALANCER: risk_chain_score = %d; want 95 (chain 6 beats chain 4 at 90)",
+			lbScore)
+	}
+}
