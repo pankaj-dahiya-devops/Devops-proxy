@@ -31,7 +31,7 @@ It is a deterministic DevOps auditing engine, optionally enhanced by AI summariz
 │  AWS engines:                  Kubernetes engine:                │
 │  - AWSCostEngine               - KubernetesEngine                │
 │  - AWSSecurityEngine             + correlateRiskChains (6 chains)│
-│  - AWSDataProtectionEngine       + buildAttackPaths (4 paths)    │
+│  - AWSDataProtectionEngine       + buildAttackPaths (5 paths)    │
 │  - AllAWSDomainsEngine           + buildRiskChains               │
 │                                  + namespace classification       │
 │  RunAudit(ctx, Options) → *AuditReport                           │
@@ -145,6 +145,7 @@ The correlation engine lives in `internal/engine/kubernetes_correlation.go` and 
 | 6.1 | Namespace-scoped dual-index for attack paths | kubernetes_correlation.go |
 | 6.2 | Strict rule-scoped filtering (primary-only collection) | kubernetes_correlation.go |
 | 7A | PATH 4 — EKS Control Plane Exposure | kubernetes_correlation.go |
+| 7B | PATH 5 — Cross-Cloud Identity Escalation | kubernetes_correlation.go |
 
 ### Namespace Classification
 
@@ -202,11 +203,12 @@ Rationale: `mergeFindings` may merge same-resource findings; the relevant rule I
 
 Rationale: `AttackPath.FindingIDs` must contain only findings directly scoped to the path definition. Only the primary `f.RuleID` is indexed, so unrelated co-located findings never appear.
 
-#### Four Attack Paths
+#### Five Attack Paths
 
 | Path | Score | Scope | Trigger Conditions | Allowed Primary Rule IDs |
 |------|-------|-------|-------------------|--------------------------|
 | **PATH 1** | **98** | Per-namespace | `K8S_SERVICE_PUBLIC_LOADBALANCER` + (`K8S_POD_RUN_AS_ROOT` OR `K8S_POD_CAP_SYS_ADMIN`) + (`EKS_SERVICEACCOUNT_NO_IRSA` OR `K8S_DEFAULT_SERVICEACCOUNT_USED`); optional cluster: `EKS_NODE_ROLE_OVERPERMISSIVE` | `K8S_SERVICE_PUBLIC_LOADBALANCER`, `K8S_POD_RUN_AS_ROOT`, `K8S_POD_CAP_SYS_ADMIN`, `EKS_SERVICEACCOUNT_NO_IRSA`, `K8S_DEFAULT_SERVICEACCOUNT_USED`, `EKS_NODE_ROLE_OVERPERMISSIVE` |
+| **PATH 5** | **96** | Per-namespace | `K8S_SERVICE_PUBLIC_LOADBALANCER` + (`K8S_POD_RUN_AS_ROOT` OR `K8S_POD_CAP_SYS_ADMIN`) + (`EKS_SERVICEACCOUNT_NO_IRSA` OR `K8S_DEFAULT_SERVICEACCOUNT_USED` OR `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`); cluster: (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) | `K8S_SERVICE_PUBLIC_LOADBALANCER`, `K8S_POD_RUN_AS_ROOT`, `K8S_POD_CAP_SYS_ADMIN`, `EKS_SERVICEACCOUNT_NO_IRSA`, `K8S_DEFAULT_SERVICEACCOUNT_USED`, `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`, `EKS_NODE_ROLE_OVERPERMISSIVE`, `EKS_IAM_ROLE_WILDCARD` |
 | **PATH 4** | **94** | Cluster | `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED` | `EKS_PUBLIC_ENDPOINT_ENABLED`, `EKS_NODE_ROLE_OVERPERMISSIVE`, `EKS_IAM_ROLE_WILDCARD`, `EKS_CONTROL_PLANE_LOGGING_DISABLED` |
 | **PATH 2** | **92** | Per-namespace | `K8S_DEFAULT_SERVICEACCOUNT_USED` + `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT` + `EKS_SERVICEACCOUNT_NO_IRSA`; cluster: `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` | `K8S_DEFAULT_SERVICEACCOUNT_USED`, `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`, `EKS_SERVICEACCOUNT_NO_IRSA`, `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` |
 | **PATH 3** | **90** | Cluster | `EKS_ENCRYPTION_DISABLED` + `EKS_CONTROL_PLANE_LOGGING_DISABLED` + `K8S_CLUSTER_SINGLE_NODE` | `EKS_ENCRYPTION_DISABLED`, `EKS_CONTROL_PLANE_LOGGING_DISABLED`, `K8S_CLUSTER_SINGLE_NODE` |
@@ -215,16 +217,17 @@ Rationale: `AttackPath.FindingIDs` must contain only findings directly scoped to
 
 1. Build detection index (expanded) + collection index (primary-only) from the input findings.
 2. Evaluate PATH 1 (per qualifying namespace → N entries at score 98).
-3. Evaluate PATH 2 (per qualifying namespace → M entries at score 92).
-4. Evaluate PATH 3 (cluster-scoped → 0 or 1 entry at score 90).
-5. Evaluate PATH 4 (cluster-scoped → 0 or 1 entry at score 94).
-6. `sort.Slice` by descending score → final sorted `[]AttackPath`.
+3. Evaluate PATH 5 (per qualifying namespace → M entries at score 96).
+4. Evaluate PATH 2 (per qualifying namespace → K entries at score 92).
+5. Evaluate PATH 3 (cluster-scoped → 0 or 1 entry at score 90).
+6. Evaluate PATH 4 (cluster-scoped → 0 or 1 entry at score 94).
+7. `sort.Slice` by descending score → final sorted `[]AttackPath`.
 
 #### Scoping Rules
 
-- **Per-namespace paths (PATH 1, PATH 2)**: conditions are evaluated per namespace; one `AttackPath` entry per qualifying namespace; findings from one namespace never contaminate another's path.
+- **Per-namespace paths (PATH 1, PATH 5, PATH 2)**: conditions are evaluated per namespace; one `AttackPath` entry per qualifying namespace; findings from one namespace never contaminate another's path.
 - **Cluster-scoped paths (PATH 3, PATH 4)**: all conditions use the cluster detection index; exactly one entry total when triggered; no namespace iteration.
-- Cluster-level findings (e.g. `EKS_NODE_ROLE_OVERPERMISSIVE`) appended once per PATH 1 entry from the cluster collection index (deduplicated).
+- Cluster-level findings (e.g. `EKS_NODE_ROLE_OVERPERMISSIVE`) appended per PATH 1 and PATH 5 entry from the cluster collection index (deduplicated).
 
 #### RiskScore Hierarchy
 

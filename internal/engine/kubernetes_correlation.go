@@ -279,7 +279,7 @@ func correlateRiskChains(findings []models.Finding) {
 // finding set and returns one models.AttackPath per triggered scenario, ordered
 // by descending score.
 //
-// Four attack paths are defined:
+// Five attack paths are defined:
 //
 //	PATH 1 (score 98) — External Compromise (per-namespace):
 //	  Requires in the SAME namespace:
@@ -289,6 +289,21 @@ func correlateRiskChains(findings []models.Finding) {
 //	  Optional 4th layer (cluster-scoped): EKS_NODE_ROLE_OVERPERMISSIVE
 //	  One AttackPath entry is produced per qualifying namespace.
 //	  Description: "Externally exposed privileged workload with weak identity isolation."
+//
+//	PATH 5 (score 96) — Cross-Cloud Identity Escalation (per-namespace):
+//	  Requires in the SAME namespace:
+//	    K8S_SERVICE_PUBLIC_LOADBALANCER
+//	  + (K8S_POD_RUN_AS_ROOT OR K8S_POD_CAP_SYS_ADMIN)
+//	  + (EKS_SERVICEACCOUNT_NO_IRSA OR K8S_DEFAULT_SERVICEACCOUNT_USED OR K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT)
+//	  AND cluster-wide: (EKS_NODE_ROLE_OVERPERMISSIVE OR EKS_IAM_ROLE_WILDCARD)
+//	  One AttackPath entry is produced per qualifying namespace.
+//	  Description: "Externally reachable workload can assume over-permissive cloud IAM role (cross-plane privilege escalation)."
+//
+//	PATH 4 (score 94) — EKS Control Plane Exposure (cluster-scoped):
+//	  Requires: EKS_PUBLIC_ENDPOINT_ENABLED
+//	          + (EKS_NODE_ROLE_OVERPERMISSIVE OR EKS_IAM_ROLE_WILDCARD)
+//	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
+//	  Description: "Public EKS control plane exposed with weak IAM and insufficient audit logging."
 //
 //	PATH 2 (score 92) — Identity Escalation (per-namespace):
 //	  Requires in the SAME namespace:
@@ -304,12 +319,6 @@ func correlateRiskChains(findings []models.Finding) {
 //	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
 //	          + K8S_CLUSTER_SINGLE_NODE
 //	  Description: "Cluster governance protections disabled with no redundancy."
-//
-//	PATH 4 (score 94) — EKS Control Plane Exposure (cluster-scoped):
-//	  Requires: EKS_PUBLIC_ENDPOINT_ENABLED
-//	          + (EKS_NODE_ROLE_OVERPERMISSIVE OR EKS_IAM_ROLE_WILDCARD)
-//	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
-//	  Description: "Public EKS control plane exposed with weak IAM and insufficient audit logging."
 //
 // When attack paths are present, the caller should use the highest path score as
 // Summary.RiskScore (overriding the chain-based score). If no paths are detected,
@@ -341,12 +350,16 @@ func buildAttackPaths(findings []models.Finding) []models.AttackPath {
 	//   PATH 1: K8S_SERVICE_PUBLIC_LOADBALANCER, K8S_POD_RUN_AS_ROOT,
 	//           K8S_POD_CAP_SYS_ADMIN, EKS_SERVICEACCOUNT_NO_IRSA,
 	//           K8S_DEFAULT_SERVICEACCOUNT_USED, EKS_NODE_ROLE_OVERPERMISSIVE (optional)
+	//   PATH 5: K8S_SERVICE_PUBLIC_LOADBALANCER, K8S_POD_RUN_AS_ROOT,
+	//           K8S_POD_CAP_SYS_ADMIN, EKS_SERVICEACCOUNT_NO_IRSA,
+	//           K8S_DEFAULT_SERVICEACCOUNT_USED, K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT,
+	//           EKS_NODE_ROLE_OVERPERMISSIVE, EKS_IAM_ROLE_WILDCARD
+	//   PATH 4: EKS_PUBLIC_ENDPOINT_ENABLED, EKS_NODE_ROLE_OVERPERMISSIVE,
+	//           EKS_IAM_ROLE_WILDCARD, EKS_CONTROL_PLANE_LOGGING_DISABLED
 	//   PATH 2: K8S_DEFAULT_SERVICEACCOUNT_USED, K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT,
 	//           EKS_SERVICEACCOUNT_NO_IRSA, EKS_OIDC_PROVIDER_NOT_ASSOCIATED
 	//   PATH 3: EKS_ENCRYPTION_DISABLED, EKS_CONTROL_PLANE_LOGGING_DISABLED,
 	//           K8S_CLUSTER_SINGLE_NODE
-	//   PATH 4: EKS_PUBLIC_ENDPOINT_ENABLED, EKS_NODE_ROLE_OVERPERMISSIVE,
-	//           EKS_IAM_ROLE_WILDCARD, EKS_CONTROL_PLANE_LOGGING_DISABLED
 
 	// Detection index — namespace-scoped (expanded via ruleIDsForFinding).
 	detectNS := buildNamespaceRuleIndex(findings)
@@ -546,6 +559,58 @@ func buildAttackPaths(findings []models.Finding) []models.AttackPath {
 			FindingIDs:  fids,
 			Description: "Public EKS control plane exposed with weak IAM and insufficient audit logging.",
 		})
+	}
+
+	// ── PATH 5 (96): Cross-Cloud Identity Escalation — per-namespace ─────────
+	// Conditions checked within the SAME namespace:
+	//   - K8S_SERVICE_PUBLIC_LOADBALANCER (network exposure)
+	//   - K8S_POD_RUN_AS_ROOT OR K8S_POD_CAP_SYS_ADMIN (workload privilege)
+	//   - EKS_SERVICEACCOUNT_NO_IRSA OR K8S_DEFAULT_SERVICEACCOUNT_USED
+	//     OR K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT (identity weakness)
+	// AND cluster-wide:
+	//   - EKS_NODE_ROLE_OVERPERMISSIVE OR EKS_IAM_ROLE_WILDCARD (IAM over-permission)
+	// One AttackPath entry is produced per qualifying namespace.
+	hasClusterIAM := clusterHas("EKS_NODE_ROLE_OVERPERMISSIVE") || clusterHas("EKS_IAM_ROLE_WILDCARD")
+	if hasClusterIAM {
+		for ns := range detectNS {
+			hasLB5 := nsHas(ns, "K8S_SERVICE_PUBLIC_LOADBALANCER")
+			hasPriv5 := nsHas(ns, "K8S_POD_RUN_AS_ROOT") || nsHas(ns, "K8S_POD_CAP_SYS_ADMIN")
+			hasIdentity5 := nsHas(ns, "EKS_SERVICEACCOUNT_NO_IRSA") ||
+				nsHas(ns, "K8S_DEFAULT_SERVICEACCOUNT_USED") ||
+				nsHas(ns, "K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT")
+			if !hasLB5 || !hasPriv5 || !hasIdentity5 {
+				continue
+			}
+
+			// Collect namespace-scoped finding IDs for all contributing rules
+			// present in this namespace.
+			nsRules5 := []string{"K8S_SERVICE_PUBLIC_LOADBALANCER"}
+			for _, r := range []string{
+				"K8S_POD_RUN_AS_ROOT", "K8S_POD_CAP_SYS_ADMIN",
+				"EKS_SERVICEACCOUNT_NO_IRSA", "K8S_DEFAULT_SERVICEACCOUNT_USED",
+				"K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT",
+			} {
+				if nsHas(ns, r) {
+					nsRules5 = append(nsRules5, r)
+				}
+			}
+			fids := collectNSIDs(ns, nsRules5...)
+
+			// Append cluster IAM finding IDs (deduplicated).
+			seen := make(map[string]struct{})
+			for _, id := range fids {
+				seen[id] = struct{}{}
+			}
+			fids = appendClusterIDs(seen, fids, "EKS_NODE_ROLE_OVERPERMISSIVE")
+			fids = appendClusterIDs(seen, fids, "EKS_IAM_ROLE_WILDCARD")
+
+			paths = append(paths, models.AttackPath{
+				Score:      96,
+				Layers:     []string{"Network Exposure", "Workload Compromise", "Cloud IAM Escalation"},
+				FindingIDs: fids,
+				Description: "Externally reachable workload can assume over-permissive cloud IAM role (cross-plane privilege escalation).",
+			})
+		}
 	}
 
 	// Order by descending score.
