@@ -449,30 +449,31 @@ The highest score across all correlated findings is also surfaced in `report.sum
 
 `risk_score` is `0` when no risk chain fires. It reflects the pre-policy merged finding set — computed before `--min-risk-score` filtering — so the summary always shows the true cluster risk level regardless of what the caller chose to display.
 
-#### Attack Paths (Phase 6 + 7A)
+#### Attack Paths (Phase 6 + 7A + 7B)
 
 When `--show-risk-chains` is enabled, the engine also detects **multi-layer attack paths** — compound scenarios where multiple independent findings combine into a meaningful threat chain. Unlike risk chains (which annotate individual findings), attack paths describe end-to-end attacker journeys.
 
-Four attack paths are defined:
+Five attack paths are defined:
 
 | Path | Score | Scope | Trigger | Description |
 |------|-------|-------|---------|-------------|
 | **PATH 1** | **98** | Per-namespace | `K8S_SERVICE_PUBLIC_LOADBALANCER` + (`K8S_POD_RUN_AS_ROOT` OR `K8S_POD_CAP_SYS_ADMIN`) + (`EKS_SERVICEACCOUNT_NO_IRSA` OR `K8S_DEFAULT_SERVICEACCOUNT_USED`); optional: `EKS_NODE_ROLE_OVERPERMISSIVE` | Externally exposed privileged workload with weak identity isolation |
+| **PATH 5** | **96** | Per-namespace | `K8S_SERVICE_PUBLIC_LOADBALANCER` + (`K8S_POD_RUN_AS_ROOT` OR `K8S_POD_CAP_SYS_ADMIN`) + (`EKS_SERVICEACCOUNT_NO_IRSA` OR `K8S_DEFAULT_SERVICEACCOUNT_USED` OR `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT`) + cluster: (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) | Externally reachable workload can assume over-permissive cloud IAM role |
 | **PATH 4** | **94** | Cluster | `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED` | Public EKS control plane exposed with weak IAM and insufficient audit logging |
 | **PATH 2** | **92** | Per-namespace | `K8S_DEFAULT_SERVICEACCOUNT_USED` + `K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT` + `EKS_SERVICEACCOUNT_NO_IRSA` + cluster: `EKS_OIDC_PROVIDER_NOT_ASSOCIATED` | Service account token misuse combined with missing IRSA and OIDC |
 | **PATH 3** | **90** | Cluster | `EKS_ENCRYPTION_DISABLED` + `EKS_CONTROL_PLANE_LOGGING_DISABLED` + `K8S_CLUSTER_SINGLE_NODE` | Cluster governance protections disabled with no redundancy |
 
 **Strict rule filtering**: each attack path's `finding_ids` contains **only** findings whose primary `rule_id` is in the path's allowed set. Unrelated findings in the same namespace or cluster are never included, ensuring clean, scoped references.
 
-**Scoring hierarchy**: `Summary.RiskScore` = highest attack path score when any path is detected; falls back to highest chain score when no paths fire.
+**Scoring hierarchy**: `Summary.RiskScore` = highest attack path score when any path is detected; falls back to highest chain score when no paths fire. Score order: 98 → 96 → 94 → 92 → 90.
 
 ```bash
 # Enable attack path and risk chain detection
 ./dp kubernetes audit --show-risk-chains
 
-# Example: PATH 4 detected (score 94 overrides any chain score)
+# Example: PATH 5 detected (score 96 overrides any chain score)
 ./dp kubernetes audit --show-risk-chains --output=json | jq '.summary.risk_score'
-# 94
+# 96
 ```
 
 Example JSON output with attack paths:
@@ -480,16 +481,16 @@ Example JSON output with attack paths:
 ```json
 {
   "summary": {
-    "total_findings": 5,
+    "total_findings": 6,
     "critical_findings": 1,
-    "high_findings": 3,
-    "risk_score": 94,
+    "high_findings": 4,
+    "risk_score": 96,
     "attack_paths": [
       {
-        "score": 94,
-        "layers": ["Control Plane Exposure", "IAM Over-Permission", "Observability Gap"],
-        "finding_ids": ["EKS_PUBLIC_ENDPOINT_ENABLED:my-cluster", "EKS_NODE_ROLE_OVERPERMISSIVE:my-cluster", "EKS_CONTROL_PLANE_LOGGING_DISABLED:my-cluster"],
-        "description": "Public EKS control plane exposed with weak IAM and insufficient audit logging."
+        "score": 96,
+        "layers": ["Network Exposure", "Workload Compromise", "Cloud IAM Escalation"],
+        "finding_ids": ["K8S_SERVICE_PUBLIC_LOADBALANCER:web-svc", "K8S_POD_RUN_AS_ROOT:web-pod", "K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT:default", "EKS_NODE_ROLE_OVERPERMISSIVE:my-cluster"],
+        "description": "Externally reachable workload can assume over-permissive cloud IAM role (cross-plane privilege escalation)."
       }
     ]
   }
@@ -941,6 +942,7 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Phase 6.1: Attack paths refactored to namespace-scoped dual-index; PATH 1/2 produce one entry per qualifying namespace
 - [x] Phase 6.2: Strict rule-scoped filtering — dual detection/collection index design; FindingIDs contain only allowed primary rule IDs per path
 - [x] Phase 7A: PATH 4 (score 94) — EKS Control Plane Exposure; cluster-scoped; requires `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED`; strict cluster-only filtering; 7 new tests
+- [x] Phase 7B: PATH 5 (score 96) — Cross-Cloud Identity Escalation; per-namespace + cluster IAM; requires `K8S_SERVICE_PUBLIC_LOADBALANCER` + privilege + identity weakness + cluster (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`); strict 8-rule filtering; 8 new tests
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module
