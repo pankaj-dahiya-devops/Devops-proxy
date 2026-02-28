@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"sort"
+
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
 )
 
@@ -271,4 +273,296 @@ func correlateRiskChains(findings []models.Finding) {
 			f.Metadata["risk_chain_reason"] = bestReason
 		}
 	}
+}
+
+// buildAttackPaths detects multi-layer compound attack paths across the full
+// finding set and returns one models.AttackPath per triggered scenario, ordered
+// by descending score.
+//
+// Three attack paths are defined:
+//
+//	PATH 1 (score 98) — External Compromise (per-namespace):
+//	  Requires in the SAME namespace:
+//	    K8S_SERVICE_PUBLIC_LOADBALANCER
+//	  + (K8S_POD_RUN_AS_ROOT OR K8S_POD_CAP_SYS_ADMIN)
+//	  + (EKS_SERVICEACCOUNT_NO_IRSA OR K8S_DEFAULT_SERVICEACCOUNT_USED)
+//	  Optional 4th layer (cluster-scoped): EKS_NODE_ROLE_OVERPERMISSIVE
+//	  One AttackPath entry is produced per qualifying namespace.
+//	  Description: "Externally exposed privileged workload with weak identity isolation."
+//
+//	PATH 2 (score 92) — Identity Escalation (per-namespace):
+//	  Requires in the SAME namespace:
+//	    K8S_DEFAULT_SERVICEACCOUNT_USED
+//	  + K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT
+//	  + EKS_SERVICEACCOUNT_NO_IRSA
+//	  AND cluster-wide: EKS_OIDC_PROVIDER_NOT_ASSOCIATED
+//	  One AttackPath entry is produced per qualifying namespace.
+//	  Description: "Service account token misuse combined with missing IRSA and OIDC."
+//
+//	PATH 3 (score 90) — Governance Collapse (cluster-scoped):
+//	  Requires: EKS_ENCRYPTION_DISABLED
+//	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
+//	          + K8S_CLUSTER_SINGLE_NODE
+//	  Description: "Cluster governance protections disabled with no redundancy."
+//
+// When attack paths are present, the caller should use the highest path score as
+// Summary.RiskScore (overriding the chain-based score). If no paths are detected,
+// the chain-based score is used as the fallback.
+//
+// Strict rule filtering: only a finding whose PRIMARY RuleID (f.RuleID) is in
+// a path's allowed rule set will be detected and collected. Merged rule IDs
+// stored in Metadata["rules"] are not used. This guarantees that AttackPath
+// FindingIDs contain only findings directly scoped to the path's definition.
+func buildAttackPaths(findings []models.Finding) []models.AttackPath {
+	if len(findings) == 0 {
+		return nil
+	}
+
+	// Two separate index pairs — one for detection, one for collection.
+	//
+	// DETECTION (expanded): uses ruleIDsForFinding so that merged findings
+	// (Metadata["rules"]) contribute to nsHas/clusterHas condition checks.
+	// This ensures attack paths trigger correctly even when the engine has merged
+	// same-resource findings and the relevant rule ID is not the primary.
+	//
+	// COLLECTION (primary-only): uses f.RuleID only.
+	// Only findings whose PRIMARY rule ID is in a path's allowed set appear in
+	// AttackPath.FindingIDs, preventing unrelated-primary findings (e.g. a finding
+	// with primary K8S_POD_NO_SECCOMP that happened to be merged with
+	// K8S_POD_RUN_AS_ROOT) from polluting the path's finding reference list.
+	//
+	// Allowed primary rule IDs per path:
+	//   PATH 1: K8S_SERVICE_PUBLIC_LOADBALANCER, K8S_POD_RUN_AS_ROOT,
+	//           K8S_POD_CAP_SYS_ADMIN, EKS_SERVICEACCOUNT_NO_IRSA,
+	//           K8S_DEFAULT_SERVICEACCOUNT_USED, EKS_NODE_ROLE_OVERPERMISSIVE (optional)
+	//   PATH 2: K8S_DEFAULT_SERVICEACCOUNT_USED, K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT,
+	//           EKS_SERVICEACCOUNT_NO_IRSA, EKS_OIDC_PROVIDER_NOT_ASSOCIATED
+	//   PATH 3: EKS_ENCRYPTION_DISABLED, EKS_CONTROL_PLANE_LOGGING_DISABLED,
+	//           K8S_CLUSTER_SINGLE_NODE
+
+	// Detection index — namespace-scoped (expanded via ruleIDsForFinding).
+	detectNS := buildNamespaceRuleIndex(findings)
+
+	// Detection index — cluster-scoped (expanded via ruleIDsForFinding).
+	detectCluster := make(map[string]struct{})
+	for i := range findings {
+		f := &findings[i]
+		if resolveNamespaceForFinding(f) == "" {
+			for _, ruleID := range ruleIDsForFinding(f) {
+				detectCluster[ruleID] = struct{}{}
+			}
+		}
+	}
+
+	// Collection index — namespace-scoped (primary f.RuleID only).
+	collectNS := make(map[string]map[string][]string)
+	// Collection index — cluster-scoped (primary f.RuleID only).
+	collectCluster := make(map[string][]string)
+	for i := range findings {
+		f := &findings[i]
+		ns := resolveNamespaceForFinding(f)
+		if ns != "" {
+			if collectNS[ns] == nil {
+				collectNS[ns] = make(map[string][]string)
+			}
+			collectNS[ns][f.RuleID] = append(collectNS[ns][f.RuleID], f.ID)
+		} else {
+			collectCluster[f.RuleID] = append(collectCluster[f.RuleID], f.ID)
+		}
+	}
+
+	// nsHas reports whether any finding in ns has ruleID (detection, expanded).
+	nsHas := func(ns, ruleID string) bool {
+		return nsIndexHas(detectNS, ns, ruleID)
+	}
+
+	// clusterHas reports whether any cluster-scoped finding has ruleID (detection, expanded).
+	clusterHas := func(ruleID string) bool {
+		_, ok := detectCluster[ruleID]
+		return ok
+	}
+
+	// collectNSIDs returns deduplicated finding IDs from collectNS[ns] for the given
+	// ruleIDs (primary-only collection).
+	collectNSIDs := func(ns string, ruleIDs ...string) []string {
+		seen := make(map[string]struct{})
+		var ids []string
+		for _, ruleID := range ruleIDs {
+			for _, fid := range collectNS[ns][ruleID] {
+				if _, already := seen[fid]; !already {
+					seen[fid] = struct{}{}
+					ids = append(ids, fid)
+				}
+			}
+		}
+		return ids
+	}
+
+	// appendClusterIDs appends finding IDs from collectCluster for the given ruleIDs,
+	// deduplicating against the supplied seen set (primary-only collection).
+	appendClusterIDs := func(seen map[string]struct{}, ids []string, ruleIDs ...string) []string {
+		for _, ruleID := range ruleIDs {
+			for _, fid := range collectCluster[ruleID] {
+				if _, already := seen[fid]; !already {
+					seen[fid] = struct{}{}
+					ids = append(ids, fid)
+				}
+			}
+		}
+		return ids
+	}
+
+	var paths []models.AttackPath
+
+	// ── PATH 1 (98): External Compromise — one entry per qualifying namespace ──
+	// Conditions checked within the same namespace:
+	//   - has K8S_SERVICE_PUBLIC_LOADBALANCER (network exposure)
+	//   - has K8S_POD_RUN_AS_ROOT or K8S_POD_CAP_SYS_ADMIN (workload privilege)
+	//   - has EKS_SERVICEACCOUNT_NO_IRSA or K8S_DEFAULT_SERVICEACCOUNT_USED (identity weakness)
+	// Optional: EKS_NODE_ROLE_OVERPERMISSIVE (cluster-scoped) appended once per entry.
+	nodeRolePresent := clusterHas("EKS_NODE_ROLE_OVERPERMISSIVE")
+	for ns := range detectNS {
+		hasLB := nsHas(ns, "K8S_SERVICE_PUBLIC_LOADBALANCER")
+		hasPriv := nsHas(ns, "K8S_POD_RUN_AS_ROOT") || nsHas(ns, "K8S_POD_CAP_SYS_ADMIN")
+		hasIdentityWeak := nsHas(ns, "EKS_SERVICEACCOUNT_NO_IRSA") || nsHas(ns, "K8S_DEFAULT_SERVICEACCOUNT_USED")
+		if !hasLB || !hasPriv || !hasIdentityWeak {
+			continue
+		}
+
+		layers := []string{"Network Exposure", "Workload Privilege", "Identity Weakness"}
+
+		// Collect namespace-scoped finding IDs for contributing rules.
+		nsRules := []string{"K8S_SERVICE_PUBLIC_LOADBALANCER"}
+		for _, r := range []string{
+			"K8S_POD_RUN_AS_ROOT", "K8S_POD_CAP_SYS_ADMIN",
+			"EKS_SERVICEACCOUNT_NO_IRSA", "K8S_DEFAULT_SERVICEACCOUNT_USED",
+		} {
+			if nsHas(ns, r) {
+				nsRules = append(nsRules, r)
+			}
+		}
+		fids := collectNSIDs(ns, nsRules...)
+
+		// Optional 4th layer: cluster-scoped node role finding.
+		if nodeRolePresent {
+			layers = append(layers, "IAM Over-permission")
+			seen := make(map[string]struct{})
+			for _, id := range fids {
+				seen[id] = struct{}{}
+			}
+			fids = appendClusterIDs(seen, fids, "EKS_NODE_ROLE_OVERPERMISSIVE")
+		}
+
+		paths = append(paths, models.AttackPath{
+			Score:       98,
+			Layers:      layers,
+			FindingIDs:  fids,
+			Description: "Externally exposed privileged workload with weak identity isolation.",
+		})
+	}
+
+	// ── PATH 2 (92): Identity Escalation — one entry per qualifying namespace ──
+	// Conditions checked within the same namespace:
+	//   - has K8S_DEFAULT_SERVICEACCOUNT_USED
+	//   - has K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT
+	//   - has EKS_SERVICEACCOUNT_NO_IRSA
+	// AND cluster-wide: EKS_OIDC_PROVIDER_NOT_ASSOCIATED must be present.
+	if clusterHas("EKS_OIDC_PROVIDER_NOT_ASSOCIATED") {
+		for ns := range detectNS {
+			hasDefaultSA := nsHas(ns, "K8S_DEFAULT_SERVICEACCOUNT_USED")
+			hasTokenAutomount := nsHas(ns, "K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT")
+			hasNoIRSA := nsHas(ns, "EKS_SERVICEACCOUNT_NO_IRSA")
+			if !hasDefaultSA || !hasTokenAutomount || !hasNoIRSA {
+				continue
+			}
+
+			fids := collectNSIDs(ns,
+				"K8S_DEFAULT_SERVICEACCOUNT_USED",
+				"K8S_SERVICEACCOUNT_TOKEN_AUTOMOUNT",
+				"EKS_SERVICEACCOUNT_NO_IRSA",
+			)
+			// Append cluster-level OIDC finding IDs (deduplicated).
+			seen := make(map[string]struct{})
+			for _, id := range fids {
+				seen[id] = struct{}{}
+			}
+			fids = appendClusterIDs(seen, fids, "EKS_OIDC_PROVIDER_NOT_ASSOCIATED")
+
+			paths = append(paths, models.AttackPath{
+				Score:      92,
+				Layers:     []string{"Service Account Usage", "Token Exposure", "Identity Federation Missing"},
+				FindingIDs: fids,
+				Description: "Service account token misuse combined with missing IRSA and OIDC.",
+			})
+		}
+	}
+
+	// ── PATH 3 (90): Governance Collapse — cluster-scoped ────────────────────
+	// All three rules are cluster-scoped: no namespace dimension.
+	if clusterHas("EKS_ENCRYPTION_DISABLED") &&
+		clusterHas("EKS_CONTROL_PLANE_LOGGING_DISABLED") &&
+		clusterHas("K8S_CLUSTER_SINGLE_NODE") {
+		seen := make(map[string]struct{})
+		var fids []string
+		fids = appendClusterIDs(seen, fids,
+			"EKS_ENCRYPTION_DISABLED",
+			"EKS_CONTROL_PLANE_LOGGING_DISABLED",
+			"K8S_CLUSTER_SINGLE_NODE",
+		)
+		paths = append(paths, models.AttackPath{
+			Score:      90,
+			Layers:     []string{"Encryption Disabled", "Logging Disabled", "No Redundancy"},
+			FindingIDs: fids,
+			Description: "Cluster governance protections disabled with no redundancy.",
+		})
+	}
+
+	// Order by descending score.
+	sort.Slice(paths, func(i, j int) bool {
+		return paths[i].Score > paths[j].Score
+	})
+	return paths
+}
+
+// buildRiskChains groups findings by their (risk_chain_score, risk_chain_reason)
+// pair and returns one models.RiskChain per unique pair, ordered by descending
+// score. Only findings with risk_chain_score > 0 are included.
+//
+// Called by RunAudit when KubernetesAuditOptions.ShowRiskChains is true.
+// Operates on the post-policy-filter sorted finding set so that FindingIDs
+// match what appears in the report's Findings slice.
+func buildRiskChains(findings []models.Finding) []models.RiskChain {
+	type chainKey struct {
+		score  int
+		reason string
+	}
+
+	chainMap := make(map[chainKey][]string)
+	for _, f := range findings {
+		score := getRiskScore(f)
+		if score == 0 {
+			continue
+		}
+		reason, _ := f.Metadata["risk_chain_reason"].(string)
+		k := chainKey{score: score, reason: reason}
+		chainMap[k] = append(chainMap[k], f.ID)
+	}
+
+	chains := make([]models.RiskChain, 0, len(chainMap))
+	for k, ids := range chainMap {
+		chains = append(chains, models.RiskChain{
+			Score:      k.score,
+			Reason:     k.reason,
+			FindingIDs: ids,
+		})
+	}
+
+	// Order by descending score; break ties alphabetically by reason for stable output.
+	sort.Slice(chains, func(i, j int) bool {
+		if chains[i].Score != chains[j].Score {
+			return chains[i].Score > chains[j].Score
+		}
+		return chains[i].Reason < chains[j].Reason
+	})
+	return chains
 }

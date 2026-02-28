@@ -89,6 +89,13 @@ type KubernetesAuditOptions struct {
 	// reflects the full pre-filter risk picture.
 	// Default 0 — all findings are included regardless of chain score.
 	MinRiskScore int
+
+	// ShowRiskChains, when true, groups the post-filter findings by their
+	// risk_chain_score and populates Summary.RiskChains with one entry per
+	// unique (score, reason) pair, ordered by descending score.
+	// Used by the CLI --show-risk-chains flag and included in JSON output.
+	// Default false — Summary.RiskChains is nil/empty.
+	ShowRiskChains bool
 }
 
 // systemNamespaces is the canonical set of Kubernetes system namespaces.
@@ -149,12 +156,25 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 	}
 	correlateRiskChains(merged) // Phase 4A: compound risk pattern detection
 
-	// Compute the highest risk_chain_score before policy filtering so the
-	// summary reflects the full pre-policy risk picture.
+	// Phase 6: detect multi-layer attack paths from the merged finding set.
+	// Must run after correlateRiskChains so that all findings are fully annotated.
+	attackPaths := buildAttackPaths(merged)
+
+	// Compute the highest risk score before policy filtering so the summary
+	// reflects the full pre-policy risk picture.
+	// Attack path scores take precedence over chain scores when paths exist.
 	maxRiskScore := 0
-	for _, f := range merged {
-		if s := getRiskScore(f); s > maxRiskScore {
-			maxRiskScore = s
+	if len(attackPaths) > 0 {
+		for _, ap := range attackPaths {
+			if ap.Score > maxRiskScore {
+				maxRiskScore = ap.Score
+			}
+		}
+	} else {
+		for _, f := range merged {
+			if s := getRiskScore(f); s > maxRiskScore {
+				maxRiskScore = s
+			}
 		}
 	}
 
@@ -169,6 +189,12 @@ func (e *KubernetesEngine) RunAudit(ctx context.Context, opts KubernetesAuditOpt
 
 	summary := computeSummary(filtered)
 	summary.RiskScore = maxRiskScore
+
+	// Phase 5D/6: populate risk chain and attack path groupings when requested.
+	if opts.ShowRiskChains {
+		summary.AttackPaths = attackPaths
+		summary.RiskChains = buildRiskChains(filtered)
+	}
 
 	return &models.AuditReport{
 		ReportID:    fmt.Sprintf("k8s-%d", time.Now().UnixNano()),

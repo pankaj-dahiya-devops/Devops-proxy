@@ -1486,3 +1486,230 @@ func TestCorrelationEngine_Chain6Beats4_HighestScoreWins(t *testing.T) {
 			lbScore)
 	}
 }
+
+// ── Phase 5D: buildRiskChains unit tests ──────────────────────────────────────
+
+// TestBuildRiskChains_Empty verifies that an empty finding slice yields nil chains.
+func TestBuildRiskChains_Empty(t *testing.T) {
+	chains := buildRiskChains(nil)
+	if len(chains) != 0 {
+		t.Errorf("buildRiskChains(nil): got %d chains; want 0", len(chains))
+	}
+}
+
+// TestBuildRiskChains_NoChainFindings verifies that findings with no
+// risk_chain_score produce no chains.
+func TestBuildRiskChains_NoChainFindings(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "f1", RuleID: "K8S_CLUSTER_SINGLE_NODE", Severity: models.SeverityHigh},
+		{ID: "f2", RuleID: "K8S_NAMESPACE_WITHOUT_LIMITS", Severity: models.SeverityMedium},
+	}
+	chains := buildRiskChains(findings)
+	if len(chains) != 0 {
+		t.Errorf("buildRiskChains: got %d chains for unchained findings; want 0", len(chains))
+	}
+}
+
+// TestBuildRiskChains_SingleChain verifies that two findings with the same
+// score and reason are grouped into one chain entry.
+func TestBuildRiskChains_SingleChain(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID:       "f1",
+			RuleID:   "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			Severity: models.SeverityHigh,
+			Metadata: map[string]any{
+				"risk_chain_score":  80,
+				"risk_chain_reason": "Public service exposes privileged workload",
+				"namespace":         "prod",
+			},
+		},
+		{
+			ID:       "f2",
+			RuleID:   "K8S_POD_RUN_AS_ROOT",
+			Severity: models.SeverityHigh,
+			Metadata: map[string]any{
+				"risk_chain_score":  80,
+				"risk_chain_reason": "Public service exposes privileged workload",
+				"namespace":         "prod",
+			},
+		},
+	}
+	chains := buildRiskChains(findings)
+	if len(chains) != 1 {
+		t.Fatalf("buildRiskChains: got %d chains; want 1", len(chains))
+	}
+	if chains[0].Score != 80 {
+		t.Errorf("chain score = %d; want 80", chains[0].Score)
+	}
+	if chains[0].Reason != "Public service exposes privileged workload" {
+		t.Errorf("chain reason = %q; unexpected", chains[0].Reason)
+	}
+	if len(chains[0].FindingIDs) != 2 {
+		t.Errorf("chain finding IDs count = %d; want 2", len(chains[0].FindingIDs))
+	}
+}
+
+// TestBuildRiskChains_MultipleChains verifies that findings with different scores
+// are placed in separate chains and ordered by descending score.
+func TestBuildRiskChains_MultipleChains(t *testing.T) {
+	findings := []models.Finding{
+		{
+			ID:     "oidc",
+			RuleID: "EKS_OIDC_PROVIDER_NOT_ASSOCIATED",
+			Metadata: map[string]any{
+				"risk_chain_score":  95,
+				"risk_chain_reason": "Cluster lacks OIDC provider and has high-risk workload findings.",
+			},
+		},
+		{
+			ID:     "lb",
+			RuleID: "K8S_SERVICE_PUBLIC_LOADBALANCER",
+			Metadata: map[string]any{
+				"risk_chain_score":  95,
+				"risk_chain_reason": "Cluster lacks OIDC provider and has high-risk workload findings.",
+			},
+		},
+		{
+			ID:     "node-role",
+			RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE",
+			Metadata: map[string]any{
+				"risk_chain_score":  90,
+				"risk_chain_reason": "Public service exposed in cluster with over-permissive node IAM role.",
+			},
+		},
+		{
+			ID:     "chain2-sa",
+			RuleID: "K8S_DEFAULT_SERVICEACCOUNT_USED",
+			Metadata: map[string]any{
+				"risk_chain_score":  60,
+				"risk_chain_reason": "Default service account with auto-mounted token",
+			},
+		},
+		{
+			ID:     "unchained",
+			RuleID: "K8S_CLUSTER_SINGLE_NODE",
+		},
+	}
+	chains := buildRiskChains(findings)
+
+	// Expect 3 chains: score 95, 90, 60 (unchained finding excluded).
+	if len(chains) != 3 {
+		t.Fatalf("buildRiskChains: got %d chains; want 3", len(chains))
+	}
+	if chains[0].Score != 95 {
+		t.Errorf("chains[0].Score = %d; want 95 (descending order)", chains[0].Score)
+	}
+	if chains[1].Score != 90 {
+		t.Errorf("chains[1].Score = %d; want 90", chains[1].Score)
+	}
+	if chains[2].Score != 60 {
+		t.Errorf("chains[2].Score = %d; want 60", chains[2].Score)
+	}
+	// Score-95 chain must have 2 findings (oidc + lb).
+	if len(chains[0].FindingIDs) != 2 {
+		t.Errorf("chains[0].FindingIDs count = %d; want 2", len(chains[0].FindingIDs))
+	}
+}
+
+// ── Phase 5D: ShowRiskChains engine integration tests ─────────────────────────
+
+// TestShowRiskChains_Disabled_SummaryRiskChainsNil verifies that when
+// ShowRiskChains is false (the default), Summary.RiskChains is nil.
+func TestShowRiskChains_Disabled_SummaryRiskChainsNil(t *testing.T) {
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "show-chains-off-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		ShowRiskChains: false,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if report.Summary.RiskChains != nil {
+		t.Errorf("Summary.RiskChains should be nil when ShowRiskChains=false; got %v", report.Summary.RiskChains)
+	}
+}
+
+// TestShowRiskChains_Enabled_SummaryPopulated verifies that when ShowRiskChains
+// is true, Summary.RiskChains is populated with at least one chain entry.
+func TestShowRiskChains_Enabled_SummaryPopulated(t *testing.T) {
+	// Chain 1 (80): LB + run-as-root pod in same namespace.
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssRunAsRootPod("root-pod", "production"),
+	)
+	report, err := correlationEngine(cs, "show-chains-on-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		ShowRiskChains: true,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	if len(report.Summary.RiskChains) == 0 {
+		t.Fatal("Summary.RiskChains should be populated when ShowRiskChains=true and chain 1 fires")
+	}
+	// The chain with score 80 must be present.
+	found := false
+	for _, c := range report.Summary.RiskChains {
+		if c.Score == 80 {
+			found = true
+			if len(c.FindingIDs) == 0 {
+				t.Error("chain score=80 has no FindingIDs; want at least 1")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no chain with score=80 found; got: %v", report.Summary.RiskChains)
+	}
+}
+
+// TestShowRiskChains_Enabled_NoChain_EmptySlice verifies that when ShowRiskChains
+// is true but no chain fires, Summary.RiskChains is an empty (non-nil) slice.
+func TestShowRiskChains_Enabled_NoChain_EmptySlice(t *testing.T) {
+	// Just two nodes, no chain-triggering conditions.
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"),
+		k8sNode("node-2", "4", "8Gi", "3800m", "7Gi"),
+	)
+	report, err := correlationEngine(cs, "show-chains-nochain-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		ShowRiskChains: true,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	// buildRiskChains on a set with no chain findings returns an empty slice (len 0).
+	if len(report.Summary.RiskChains) != 0 {
+		t.Errorf("expected 0 chains when no chain fires; got %d", len(report.Summary.RiskChains))
+	}
+}
+
+// TestShowRiskChains_Enabled_OrderedDescending verifies that Summary.RiskChains
+// is ordered by descending score.
+func TestShowRiskChains_Enabled_OrderedDescending(t *testing.T) {
+	// Chain 1 (80) + Chain 3 (50): LB + run-as-root pod (chain 1), single node + CRITICAL pod (chain 3).
+	cs := fake.NewSimpleClientset(
+		k8sNode("node-1", "4", "8Gi", "3800m", "7Gi"), // single node → chain 3
+		k8sService("production", "web-lb", corev1.ServiceTypeLoadBalancer, map[string]string{}),
+		pssPrivilegedPod("priv-pod", "production"), // CRITICAL → chain 3
+		pssRunAsRootPod("root-pod", "production"),  // HIGH → chain 1
+	)
+	report, err := correlationEngine(cs, "show-chains-order-ctx").RunAudit(context.Background(), KubernetesAuditOptions{
+		ShowRiskChains: true,
+	})
+	if err != nil {
+		t.Fatalf("RunAudit error: %v", err)
+	}
+	chains := report.Summary.RiskChains
+	for i := 1; i < len(chains); i++ {
+		if chains[i].Score > chains[i-1].Score {
+			t.Errorf("RiskChains not sorted at index %d: score %d follows %d",
+				i, chains[i].Score, chains[i-1].Score)
+		}
+	}
+}
