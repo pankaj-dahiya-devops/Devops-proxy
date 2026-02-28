@@ -279,7 +279,7 @@ func correlateRiskChains(findings []models.Finding) {
 // finding set and returns one models.AttackPath per triggered scenario, ordered
 // by descending score.
 //
-// Three attack paths are defined:
+// Four attack paths are defined:
 //
 //	PATH 1 (score 98) — External Compromise (per-namespace):
 //	  Requires in the SAME namespace:
@@ -304,6 +304,12 @@ func correlateRiskChains(findings []models.Finding) {
 //	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
 //	          + K8S_CLUSTER_SINGLE_NODE
 //	  Description: "Cluster governance protections disabled with no redundancy."
+//
+//	PATH 4 (score 94) — EKS Control Plane Exposure (cluster-scoped):
+//	  Requires: EKS_PUBLIC_ENDPOINT_ENABLED
+//	          + (EKS_NODE_ROLE_OVERPERMISSIVE OR EKS_IAM_ROLE_WILDCARD)
+//	          + EKS_CONTROL_PLANE_LOGGING_DISABLED
+//	  Description: "Public EKS control plane exposed with weak IAM and insufficient audit logging."
 //
 // When attack paths are present, the caller should use the highest path score as
 // Summary.RiskScore (overriding the chain-based score). If no paths are detected,
@@ -339,6 +345,8 @@ func buildAttackPaths(findings []models.Finding) []models.AttackPath {
 	//           EKS_SERVICEACCOUNT_NO_IRSA, EKS_OIDC_PROVIDER_NOT_ASSOCIATED
 	//   PATH 3: EKS_ENCRYPTION_DISABLED, EKS_CONTROL_PLANE_LOGGING_DISABLED,
 	//           K8S_CLUSTER_SINGLE_NODE
+	//   PATH 4: EKS_PUBLIC_ENDPOINT_ENABLED, EKS_NODE_ROLE_OVERPERMISSIVE,
+	//           EKS_IAM_ROLE_WILDCARD, EKS_CONTROL_PLANE_LOGGING_DISABLED
 
 	// Detection index — namespace-scoped (expanded via ruleIDsForFinding).
 	detectNS := buildNamespaceRuleIndex(findings)
@@ -514,6 +522,29 @@ func buildAttackPaths(findings []models.Finding) []models.AttackPath {
 			Layers:     []string{"Encryption Disabled", "Logging Disabled", "No Redundancy"},
 			FindingIDs: fids,
 			Description: "Cluster governance protections disabled with no redundancy.",
+		})
+	}
+
+	// ── PATH 4 (94): EKS Control Plane Exposure — cluster-scoped ─────────────
+	// All three conditions are cluster-scoped: no namespace dimension.
+	// IAM condition is satisfied by either EKS_NODE_ROLE_OVERPERMISSIVE or EKS_IAM_ROLE_WILDCARD.
+	// Strict filtering: FindingIDs contain only findings from the four allowed rule IDs.
+	hasIAMOverpermissive := clusterHas("EKS_NODE_ROLE_OVERPERMISSIVE") || clusterHas("EKS_IAM_ROLE_WILDCARD")
+	if clusterHas("EKS_PUBLIC_ENDPOINT_ENABLED") &&
+		hasIAMOverpermissive &&
+		clusterHas("EKS_CONTROL_PLANE_LOGGING_DISABLED") {
+		seen := make(map[string]struct{})
+		var fids []string
+		fids = appendClusterIDs(seen, fids, "EKS_PUBLIC_ENDPOINT_ENABLED")
+		// Collect whichever IAM rule(s) are present (both if both exist).
+		fids = appendClusterIDs(seen, fids, "EKS_NODE_ROLE_OVERPERMISSIVE")
+		fids = appendClusterIDs(seen, fids, "EKS_IAM_ROLE_WILDCARD")
+		fids = appendClusterIDs(seen, fids, "EKS_CONTROL_PLANE_LOGGING_DISABLED")
+		paths = append(paths, models.AttackPath{
+			Score:       94,
+			Layers:      []string{"Control Plane Exposure", "IAM Over-Permission", "Observability Gap"},
+			FindingIDs:  fids,
+			Description: "Public EKS control plane exposed with weak IAM and insufficient audit logging.",
 		})
 	}
 

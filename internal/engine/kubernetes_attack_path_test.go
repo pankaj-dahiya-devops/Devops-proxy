@@ -1053,3 +1053,207 @@ func TestKubernetesEngine_RiskScoreFallbackToChainWhenNoAttackPaths(t *testing.T
 		t.Errorf("expected RiskScore=50 (chain fallback); got %d", report.Summary.RiskScore)
 	}
 }
+
+// ── PATH 4 unit tests ─────────────────────────────────────────────────────────
+
+// TestBuildAttackPaths_Path4_Happy verifies PATH 4 (score 94) triggers when all
+// three cluster-scoped conditions are met using EKS_NODE_ROLE_OVERPERMISSIVE
+// as the IAM condition.
+func TestBuildAttackPaths_Path4_Happy(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "f-pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED", Severity: models.SeverityHigh},
+		{ID: "f-node", RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE", Severity: models.SeverityCritical},
+		{ID: "f-log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED", Severity: models.SeverityHigh},
+	}
+	paths := buildAttackPaths(findings)
+
+	p, ok := findPathByScore(paths, 94)
+	if !ok {
+		t.Fatalf("expected PATH 4 (score 94); paths = %v", paths)
+	}
+	if p.Description != "Public EKS control plane exposed with weak IAM and insufficient audit logging." {
+		t.Errorf("unexpected description: %q", p.Description)
+	}
+	if len(p.Layers) != 3 {
+		t.Errorf("expected 3 layers; got %v", p.Layers)
+	}
+	expectedLayers := []string{"Control Plane Exposure", "IAM Over-Permission", "Observability Gap"}
+	for i, want := range expectedLayers {
+		if i >= len(p.Layers) || p.Layers[i] != want {
+			t.Errorf("layers[%d]: expected %q; got %q", i, want, p.Layers[i])
+		}
+	}
+	fidSet := make(map[string]struct{})
+	for _, id := range p.FindingIDs {
+		fidSet[id] = struct{}{}
+	}
+	for _, want := range []string{"f-pub", "f-node", "f-log"} {
+		if _, ok := fidSet[want]; !ok {
+			t.Errorf("expected finding ID %q in PATH 4; got %v", want, p.FindingIDs)
+		}
+	}
+}
+
+// TestBuildAttackPaths_Path4_WildcardIAM verifies PATH 4 also triggers when
+// EKS_IAM_ROLE_WILDCARD satisfies the IAM condition (instead of EKS_NODE_ROLE_OVERPERMISSIVE).
+func TestBuildAttackPaths_Path4_WildcardIAM(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "f-pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED", Severity: models.SeverityHigh},
+		{ID: "f-wild", RuleID: "EKS_IAM_ROLE_WILDCARD", Severity: models.SeverityCritical},
+		{ID: "f-log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED", Severity: models.SeverityHigh},
+	}
+	paths := buildAttackPaths(findings)
+	p, ok := findPathByScore(paths, 94)
+	if !ok {
+		t.Fatalf("expected PATH 4 to trigger with EKS_IAM_ROLE_WILDCARD; paths = %v", paths)
+	}
+	fidSet := make(map[string]struct{})
+	for _, id := range p.FindingIDs {
+		fidSet[id] = struct{}{}
+	}
+	for _, want := range []string{"f-pub", "f-wild", "f-log"} {
+		if _, ok := fidSet[want]; !ok {
+			t.Errorf("expected finding ID %q in PATH 4; got %v", want, p.FindingIDs)
+		}
+	}
+}
+
+// TestBuildAttackPaths_Path4_MissingPublic_NoPath verifies PATH 4 does NOT trigger
+// when EKS_PUBLIC_ENDPOINT_ENABLED is absent.
+func TestBuildAttackPaths_Path4_MissingPublic_NoPath(t *testing.T) {
+	findings := []models.Finding{
+		// missing EKS_PUBLIC_ENDPOINT_ENABLED
+		{ID: "f-node", RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE", Severity: models.SeverityCritical},
+		{ID: "f-log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED", Severity: models.SeverityHigh},
+	}
+	paths := buildAttackPaths(findings)
+	if _, ok := findPathByScore(paths, 94); ok {
+		t.Errorf("expected PATH 4 NOT to trigger without EKS_PUBLIC_ENDPOINT_ENABLED; got %v", paths)
+	}
+}
+
+// TestBuildAttackPaths_Path4_MissingIAM_NoPath verifies PATH 4 does NOT trigger
+// when neither EKS_NODE_ROLE_OVERPERMISSIVE nor EKS_IAM_ROLE_WILDCARD is present.
+func TestBuildAttackPaths_Path4_MissingIAM_NoPath(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "f-pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED", Severity: models.SeverityHigh},
+		// missing both EKS_NODE_ROLE_OVERPERMISSIVE and EKS_IAM_ROLE_WILDCARD
+		{ID: "f-log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED", Severity: models.SeverityHigh},
+	}
+	paths := buildAttackPaths(findings)
+	if _, ok := findPathByScore(paths, 94); ok {
+		t.Errorf("expected PATH 4 NOT to trigger without any IAM overpermissive rule; got %v", paths)
+	}
+}
+
+// TestBuildAttackPaths_Path4_MissingLogging_NoPath verifies PATH 4 does NOT trigger
+// when EKS_CONTROL_PLANE_LOGGING_DISABLED is absent.
+func TestBuildAttackPaths_Path4_MissingLogging_NoPath(t *testing.T) {
+	findings := []models.Finding{
+		{ID: "f-pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED", Severity: models.SeverityHigh},
+		{ID: "f-node", RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE", Severity: models.SeverityCritical},
+		// missing EKS_CONTROL_PLANE_LOGGING_DISABLED
+	}
+	paths := buildAttackPaths(findings)
+	if _, ok := findPathByScore(paths, 94); ok {
+		t.Errorf("expected PATH 4 NOT to trigger without EKS_CONTROL_PLANE_LOGGING_DISABLED; got %v", paths)
+	}
+}
+
+// TestBuildAttackPaths_Path4_StrictFiltering verifies that unrelated cluster-scoped
+// findings do NOT appear in PATH 4's FindingIDs, even when present alongside
+// the required rules.
+func TestBuildAttackPaths_Path4_StrictFiltering(t *testing.T) {
+	allowedPath4 := map[string]bool{
+		"EKS_PUBLIC_ENDPOINT_ENABLED":       true,
+		"EKS_NODE_ROLE_OVERPERMISSIVE":      true,
+		"EKS_IAM_ROLE_WILDCARD":             true,
+		"EKS_CONTROL_PLANE_LOGGING_DISABLED": true,
+	}
+	findings := []models.Finding{
+		// PATH 4 qualifying findings (all cluster-scoped: no namespace metadata).
+		{ID: "f-pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED", Severity: models.SeverityHigh},
+		{ID: "f-node", RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE", Severity: models.SeverityCritical},
+		{ID: "f-log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED", Severity: models.SeverityHigh},
+		// Unrelated cluster-scoped findings — must NOT appear in PATH 4.
+		{ID: "f-enc", RuleID: "EKS_ENCRYPTION_DISABLED", Severity: models.SeverityCritical},
+		{ID: "f-oidc", RuleID: "EKS_OIDC_PROVIDER_NOT_ASSOCIATED", Severity: models.SeverityHigh},
+	}
+	paths := buildAttackPaths(findings)
+	p, ok := findPathByScore(paths, 94)
+	if !ok {
+		t.Fatalf("expected PATH 4 to trigger; paths=%v", paths)
+	}
+
+	// Every finding in PATH 4 must have a primary rule ID from the allowed set.
+	for _, fid := range p.FindingIDs {
+		var found *models.Finding
+		for i := range findings {
+			if findings[i].ID == fid {
+				found = &findings[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("PATH 4 FindingIDs contains unknown ID %q", fid)
+			continue
+		}
+		if !allowedPath4[found.RuleID] {
+			t.Errorf("PATH 4 contains finding %q with unallowed primary rule %q", fid, found.RuleID)
+		}
+	}
+
+	// Unrelated findings must NOT be in PATH 4's FindingIDs.
+	fidSet := make(map[string]struct{})
+	for _, id := range p.FindingIDs {
+		fidSet[id] = struct{}{}
+	}
+	for _, unrelated := range []string{"f-enc", "f-oidc"} {
+		if _, bad := fidSet[unrelated]; bad {
+			t.Errorf("unrelated finding %q should not appear in PATH 4 FindingIDs; got %v", unrelated, p.FindingIDs)
+		}
+	}
+}
+
+// TestBuildAttackPaths_Path4_SortingOrder verifies that PATH 4 (score 94) sorts
+// correctly between PATH 1 (98) and PATH 2 (92) in the returned slice.
+func TestBuildAttackPaths_Path4_SortingOrder(t *testing.T) {
+	findings := []models.Finding{
+		// PATH 1 conditions (namespace "prod").
+		{ID: "lb", RuleID: "K8S_SERVICE_PUBLIC_LOADBALANCER", Metadata: nsMeta("prod")},
+		{ID: "priv", RuleID: "K8S_POD_RUN_AS_ROOT", Metadata: nsMeta("prod")},
+		{ID: "sa", RuleID: "K8S_DEFAULT_SERVICEACCOUNT_USED", Metadata: nsMeta("prod")},
+		// PATH 4 conditions (cluster-scoped).
+		{ID: "pub", RuleID: "EKS_PUBLIC_ENDPOINT_ENABLED"},
+		{ID: "node", RuleID: "EKS_NODE_ROLE_OVERPERMISSIVE"},
+		{ID: "log", RuleID: "EKS_CONTROL_PLANE_LOGGING_DISABLED"},
+	}
+	paths := buildAttackPaths(findings)
+
+	// Expect at least PATH 1 (98) and PATH 4 (94).
+	if len(paths) < 2 {
+		t.Fatalf("expected at least 2 paths; got %d: %v", len(paths), paths)
+	}
+	// Verify descending score order across all paths.
+	for i := 0; i < len(paths)-1; i++ {
+		if paths[i].Score < paths[i+1].Score {
+			t.Errorf("paths not in descending score order at index %d: %d < %d; paths=%v",
+				i, paths[i].Score, paths[i+1].Score, paths)
+		}
+	}
+	// PATH 1 must come first.
+	if paths[0].Score != 98 {
+		t.Errorf("expected first path score 98; got %d", paths[0].Score)
+	}
+	// PATH 4 must appear after PATH 1.
+	found94 := false
+	for _, p := range paths {
+		if p.Score == 94 {
+			found94 = true
+			break
+		}
+	}
+	if !found94 {
+		t.Errorf("expected PATH 4 (score 94) in sorted results; got %v", paths)
+	}
+}
