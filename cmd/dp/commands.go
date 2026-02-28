@@ -488,7 +488,8 @@ func encodeJSON(w io.Writer, report *models.AuditReport) error {
 // renderKubernetesAuditOutput writes the kubernetes audit report to w.
 // JSON mode is checked first so it takes priority over --summary.
 // In JSON mode only the JSON payload is written; no banner or table.
-func renderKubernetesAuditOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool) error {
+// When showRiskChains is true in table mode, findings are grouped by risk chain.
+func renderKubernetesAuditOutput(w io.Writer, report *models.AuditReport, outputFmt string, summary bool, colored bool, showRiskChains bool) error {
 	if outputFmt == "json" {
 		return encodeJSON(w, report)
 	}
@@ -501,6 +502,10 @@ func renderKubernetesAuditOutput(w io.Writer, report *models.AuditReport, output
 	if len(report.Findings) > 0 {
 		fmt.Fprintln(w)
 	}
+	if showRiskChains {
+		renderRiskChainTable(w, report, colored)
+		return nil
+	}
 	dpoutput.RenderTable(w, report.Findings, dpoutput.TableOptions{
 		Colored:        colored,
 		IncludeSavings: false,
@@ -509,6 +514,81 @@ func renderKubernetesAuditOutput(w io.Writer, report *models.AuditReport, output
 		LocationLabel:  "CONTEXT",
 	})
 	return nil
+}
+
+// renderRiskChainTable prints attack paths (Phase 6) and risk chains (Phase 5D)
+// grouped by score to w. Attack path sections are printed BEFORE risk chain
+// sections. Findings not part of any path or chain are shown last under
+// "Other Findings".
+func renderRiskChainTable(w io.Writer, report *models.AuditReport, colored bool) {
+	tableOpts := dpoutput.TableOptions{
+		Colored:       colored,
+		LocationLabel: "CONTEXT",
+	}
+
+	hasPaths := len(report.Summary.AttackPaths) > 0
+	hasChains := len(report.Summary.RiskChains) > 0
+
+	if !hasPaths && !hasChains {
+		fmt.Fprintln(w, "No risk chains detected.")
+		dpoutput.RenderTable(w, report.Findings, tableOpts)
+		return
+	}
+
+	// Build finding ID → finding pointer for fast lookup.
+	findingByID := make(map[string]*models.Finding, len(report.Findings))
+	for i := range report.Findings {
+		f := &report.Findings[i]
+		findingByID[f.ID] = f
+	}
+
+	shownIDs := make(map[string]bool)
+
+	// ── Attack paths (highest priority; printed first) ────────────────────────
+	for _, ap := range report.Summary.AttackPaths {
+		fmt.Fprintf(w, "ATTACK PATH (Score: %d)\n", ap.Score)
+		fmt.Fprintf(w, "Description: %s\n", ap.Description)
+		fmt.Fprintf(w, "Layers: %s\n\n", strings.Join(ap.Layers, " → "))
+
+		var pathFindings []models.Finding
+		for _, id := range ap.FindingIDs {
+			if f, ok := findingByID[id]; ok {
+				pathFindings = append(pathFindings, *f)
+				shownIDs[id] = true
+			}
+		}
+		dpoutput.RenderTable(w, pathFindings, tableOpts)
+		fmt.Fprintln(w)
+	}
+
+	// ── Risk chains (printed after attack paths) ──────────────────────────────
+	for _, chain := range report.Summary.RiskChains {
+		fmt.Fprintf(w, "RISK CHAIN (Score: %d)\n", chain.Score)
+		fmt.Fprintf(w, "Reason: %s\n\n", chain.Reason)
+
+		var chainFindings []models.Finding
+		for _, id := range chain.FindingIDs {
+			if f, ok := findingByID[id]; ok {
+				chainFindings = append(chainFindings, *f)
+				shownIDs[id] = true
+			}
+		}
+		dpoutput.RenderTable(w, chainFindings, tableOpts)
+		fmt.Fprintln(w)
+	}
+
+	// ── Findings not in any path or chain ─────────────────────────────────────
+	var remaining []models.Finding
+	for _, f := range report.Findings {
+		if !shownIDs[f.ID] {
+			remaining = append(remaining, f)
+		}
+	}
+	if len(remaining) > 0 {
+		fmt.Fprintln(w, "Other Findings:")
+		fmt.Fprintln(w)
+		dpoutput.RenderTable(w, remaining, tableOpts)
+	}
 }
 
 // renderAWSCostOutput writes the cost audit report to w.
@@ -776,14 +856,15 @@ func printClusterInspect(w io.Writer, data *kube.ClusterData) {
 // newKubernetesAuditCmd implements dp kubernetes audit.
 func newKubernetesAuditCmd() *cobra.Command {
 	var (
-		contextName  string
-		outputFmt    string
-		summary      bool
-		filePath     string
-		policyPath   string
-		color        bool
-		excludeSystem bool
-		minRiskScore int
+		contextName    string
+		outputFmt      string
+		summary        bool
+		filePath       string
+		policyPath     string
+		color          bool
+		excludeSystem  bool
+		minRiskScore   int
+		showRiskChains bool
 	)
 
 	cmd := &cobra.Command{
@@ -817,10 +898,11 @@ func newKubernetesAuditCmd() *cobra.Command {
 			)
 
 			opts := engine.KubernetesAuditOptions{
-				ContextName:   contextName,
-				ReportFormat:  engine.ReportFormat(outputFmt),
-				ExcludeSystem: excludeSystem,
-				MinRiskScore:  minRiskScore,
+				ContextName:    contextName,
+				ReportFormat:   engine.ReportFormat(outputFmt),
+				ExcludeSystem:  excludeSystem,
+				MinRiskScore:   minRiskScore,
+				ShowRiskChains: showRiskChains,
 			}
 
 			report, err := eng.RunAudit(cmd.Context(), opts)
@@ -834,7 +916,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 				}
 			}
 
-			if err := renderKubernetesAuditOutput(os.Stdout, report, outputFmt, summary, color); err != nil {
+			if err := renderKubernetesAuditOutput(os.Stdout, report, outputFmt, summary, color, showRiskChains); err != nil {
 				return err
 			}
 
@@ -859,6 +941,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&color, "color", false, "Enable colored severity output in table format (not CI-safe)")
 	cmd.Flags().BoolVar(&excludeSystem, "exclude-system", false, "Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease)")
 	cmd.Flags().IntVar(&minRiskScore, "min-risk-score", 0, "Only include findings with a risk chain score >= this value (0 = include all)")
+	cmd.Flags().BoolVar(&showRiskChains, "show-risk-chains", false, "Group findings by risk chain in table output; add risk_chains to JSON output")
 
 	return cmd
 }

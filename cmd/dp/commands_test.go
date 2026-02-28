@@ -369,6 +369,32 @@ func TestKubernetesAuditCmd_ExcludeSystemFlag_Type(t *testing.T) {
 	}
 }
 
+// TestKubernetesAuditCmd_ShowRiskChainsFlag_Registered verifies that the
+// --show-risk-chains flag is declared on the kubernetes audit command with the
+// correct default value (false).
+func TestKubernetesAuditCmd_ShowRiskChainsFlag_Registered(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("show-risk-chains")
+	if flag == nil {
+		t.Fatal("--show-risk-chains flag not registered on kubernetes audit command")
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--show-risk-chains default = %q; want false", flag.DefValue)
+	}
+}
+
+// TestKubernetesAuditCmd_ShowRiskChainsFlag_Type verifies the flag is a bool.
+func TestKubernetesAuditCmd_ShowRiskChainsFlag_Type(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("show-risk-chains")
+	if flag == nil {
+		t.Fatal("--show-risk-chains flag not registered")
+	}
+	if flag.Value.Type() != "bool" {
+		t.Errorf("--show-risk-chains flag type = %q; want bool", flag.Value.Type())
+	}
+}
+
 // TestRunKubernetesInspect_ContextForwarded verifies that the --context flag
 // value is passed through to the KubeClientProvider unchanged.
 func TestRunKubernetesInspect_ContextForwarded(t *testing.T) {
@@ -398,7 +424,7 @@ func TestRenderKubernetesAuditOutput_JSONMode_PureJSON(t *testing.T) {
 	report.Profile = "my-cluster"
 
 	var buf bytes.Buffer
-	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false); err != nil {
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -420,7 +446,7 @@ func TestRenderKubernetesAuditOutput_JSONMode_SummaryIgnored(t *testing.T) {
 	report.Profile = "my-cluster"
 
 	var buf bytes.Buffer
-	if err := renderKubernetesAuditOutput(&buf, report, "json", true, false); err != nil {
+	if err := renderKubernetesAuditOutput(&buf, report, "json", true, false, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -443,7 +469,7 @@ func TestRenderKubernetesAuditOutput_JSONMode_IsValidJSON(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false); err != nil {
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -460,7 +486,7 @@ func TestRenderKubernetesAuditOutput_TableMode_ContextPresent(t *testing.T) {
 	report.Profile = "prod-cluster"
 
 	var buf bytes.Buffer
-	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false); err != nil {
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -470,6 +496,256 @@ func TestRenderKubernetesAuditOutput_TableMode_ContextPresent(t *testing.T) {
 	}
 	if !strings.Contains(out, "prod-cluster") {
 		t.Errorf("table output must contain cluster name; got:\n%s", out)
+	}
+}
+
+// TestRenderKubernetesAuditOutput_ShowRiskChains_NoChains_FallbackMessage verifies
+// that when showRiskChains=true but no chains are present, the output contains
+// the fallback message "No risk chains detected."
+func TestRenderKubernetesAuditOutput_ShowRiskChains_NoChains_FallbackMessage(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ID: "f1", ResourceID: "ns-1", Severity: models.SeverityMedium},
+	})
+	report.Profile = "test-cluster"
+	// No RiskChains populated (ShowRiskChains was false in the engine or no chain fired).
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "No risk chains detected.") {
+		t.Errorf("output should contain fallback message; got:\n%s", out)
+	}
+}
+
+// TestRenderKubernetesAuditOutput_ShowRiskChains_ChainHeader verifies that when
+// RiskChains are present and showRiskChains=true, the output contains chain
+// headers with the score and reason.
+func TestRenderKubernetesAuditOutput_ShowRiskChains_ChainHeader(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{
+			ID:         "f1",
+			ResourceID: "web-svc",
+			Severity:   models.SeverityHigh,
+			Metadata: map[string]any{
+				"risk_chain_score":  80,
+				"risk_chain_reason": "Public service exposes privileged workload",
+			},
+		},
+	})
+	report.Profile = "test-cluster"
+	report.Summary.RiskChains = []models.RiskChain{
+		{Score: 80, Reason: "Public service exposes privileged workload", FindingIDs: []string{"f1"}},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "RISK CHAIN (Score: 80)") {
+		t.Errorf("output should contain chain header; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Public service exposes privileged workload") {
+		t.Errorf("output should contain chain reason; got:\n%s", out)
+	}
+}
+
+// TestRenderKubernetesAuditOutput_ShowRiskChains_JSON_RiskChainsIncluded verifies
+// that in JSON mode with risk_chains populated, the JSON output contains the
+// risk_chains field.
+func TestRenderKubernetesAuditOutput_ShowRiskChains_JSON_RiskChainsIncluded(t *testing.T) {
+	report := makeReport(nil)
+	report.Profile = "test-cluster"
+	report.Summary.RiskChains = []models.RiskChain{
+		{Score: 95, Reason: "Cluster lacks OIDC provider and has high-risk workload findings.", FindingIDs: []string{"oidc-f1"}},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, `"risk_chains"`) {
+		t.Errorf("JSON output should contain risk_chains field; got:\n%s", out)
+	}
+	if !strings.Contains(out, `"score": 95`) {
+		t.Errorf("JSON output should contain chain score 95; got:\n%s", out)
+	}
+}
+
+// TestRenderKubernetesAuditOutput_ShowRiskChains_OtherFindings verifies that
+// findings not part of any chain are listed under "Other Findings".
+func TestRenderKubernetesAuditOutput_ShowRiskChains_OtherFindings(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{
+			ID:         "chain-f",
+			ResourceID: "web-svc",
+			Severity:   models.SeverityHigh,
+		},
+		{
+			ID:         "other-f",
+			ResourceID: "lone-finding",
+			Severity:   models.SeverityMedium,
+		},
+	})
+	report.Profile = "test-cluster"
+	report.Summary.RiskChains = []models.RiskChain{
+		{Score: 80, Reason: "some chain", FindingIDs: []string{"chain-f"}},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Other Findings") {
+		t.Errorf("output should contain 'Other Findings' section for unchained finding; got:\n%s", out)
+	}
+}
+
+// ── Phase 6: attack path render tests ────────────────────────────────────────
+
+// TestRenderRiskChainTable_AttackPathBeforeChain verifies that ATTACK PATH
+// sections appear before RISK CHAIN sections in table output.
+func TestRenderRiskChainTable_AttackPathBeforeChain(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ID: "f1", ResourceID: "web-svc", Severity: models.SeverityHigh},
+		{ID: "f2", ResourceID: "priv-pod", Severity: models.SeverityHigh},
+	})
+	report.Profile = "test-cluster"
+	report.Summary.AttackPaths = []models.AttackPath{
+		{
+			Score:       98,
+			Description: "Externally exposed privileged workload with weak identity isolation.",
+			Layers:      []string{"Network Exposure", "Workload Privilege", "Identity Weakness"},
+			FindingIDs:  []string{"f1", "f2"},
+		},
+	}
+	report.Summary.RiskChains = []models.RiskChain{
+		{Score: 80, Reason: "Public service exposes privileged workload", FindingIDs: []string{"f1", "f2"}},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+
+	attackPos := strings.Index(out, "ATTACK PATH")
+	chainPos := strings.Index(out, "RISK CHAIN")
+
+	if attackPos < 0 {
+		t.Error("expected 'ATTACK PATH' in output")
+	}
+	if chainPos < 0 {
+		t.Error("expected 'RISK CHAIN' in output")
+	}
+	if attackPos > chainPos {
+		t.Errorf("expected ATTACK PATH (pos %d) to appear before RISK CHAIN (pos %d)", attackPos, chainPos)
+	}
+}
+
+// TestRenderRiskChainTable_AttackPathContent verifies score, description, and
+// layer line are rendered correctly in table output.
+func TestRenderRiskChainTable_AttackPathContent(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ID: "f1", ResourceID: "cluster", Severity: models.SeverityCritical},
+	})
+	report.Profile = "test-cluster"
+	report.Summary.AttackPaths = []models.AttackPath{
+		{
+			Score:       90,
+			Description: "Cluster governance protections disabled with no redundancy.",
+			Layers:      []string{"Encryption Disabled", "Logging Disabled", "No Redundancy"},
+			FindingIDs:  []string{"f1"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"ATTACK PATH (Score: 90)",
+		"Cluster governance protections disabled with no redundancy.",
+		"Encryption Disabled → Logging Disabled → No Redundancy",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestRenderRiskChainTable_OnlyAttackPaths verifies rendering when attack paths
+// are present but no risk chains.
+func TestRenderRiskChainTable_OnlyAttackPaths(t *testing.T) {
+	report := makeReport([]models.Finding{
+		{ID: "f1", ResourceID: "svc", Severity: models.SeverityHigh},
+	})
+	report.Profile = "test-cluster"
+	report.Summary.AttackPaths = []models.AttackPath{
+		{
+			Score:       98,
+			Description: "Externally exposed privileged workload with weak identity isolation.",
+			Layers:      []string{"Network Exposure", "Workload Privilege", "Identity Weakness"},
+			FindingIDs:  []string{"f1"},
+		},
+	}
+	// RiskChains intentionally nil.
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "table", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "ATTACK PATH") {
+		t.Error("expected 'ATTACK PATH' in output")
+	}
+	if strings.Contains(out, "RISK CHAIN") {
+		t.Error("unexpected 'RISK CHAIN' when no chains present")
+	}
+	if strings.Contains(out, "No risk chains detected.") {
+		t.Error("unexpected 'No risk chains detected.' when attack paths are present")
+	}
+}
+
+// TestRenderRiskChainTable_AttackPaths_JSON_Included verifies that attack_paths
+// appear in JSON output when present.
+func TestRenderRiskChainTable_AttackPaths_JSON_Included(t *testing.T) {
+	report := makeReport(nil)
+	report.Profile = "test-cluster"
+	report.Summary.AttackPaths = []models.AttackPath{
+		{
+			Score:       98,
+			Description: "Externally exposed privileged workload with weak identity isolation.",
+			Layers:      []string{"Network Exposure", "Workload Privilege", "Identity Weakness"},
+			FindingIDs:  []string{},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := renderKubernetesAuditOutput(&buf, report, "json", false, false, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, `"attack_paths"`) {
+		t.Errorf("JSON output should contain attack_paths field; got:\n%s", out)
+	}
+	if !strings.Contains(out, `"score": 98`) {
+		t.Errorf("JSON output should contain score 98; got:\n%s", out)
+	}
+	if !strings.Contains(out, "Externally exposed privileged workload with weak identity isolation.") {
+		t.Errorf("JSON output should contain attack path description; got:\n%s", out)
 	}
 }
 

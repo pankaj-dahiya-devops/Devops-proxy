@@ -57,6 +57,32 @@ type Finding struct {
 	Metadata                map[string]any `json:"metadata,omitempty"`
 }
 
+// RiskChain groups findings that participate in the same compound risk
+// correlation chain. Populated in AuditSummary when ShowRiskChains is requested.
+type RiskChain struct {
+	// Score is the numeric risk weight for this chain (higher = more critical).
+	Score int `json:"score"`
+	// Reason is the human-readable explanation of why this chain is risky.
+	Reason string `json:"reason"`
+	// FindingIDs lists the Finding.ID values that participate in this chain.
+	FindingIDs []string `json:"finding_ids"`
+}
+
+// AttackPath represents a multi-layer compound attack path detected across
+// multiple correlated findings. Scores are higher than individual risk chains
+// because they require the convergence of multiple security control failures.
+// Populated in AuditSummary when ShowRiskChains is requested.
+type AttackPath struct {
+	// Score is the composite risk weight for this path (98, 92, or 90).
+	Score int `json:"score"`
+	// Layers describes the sequential stages of the attack path.
+	Layers []string `json:"layers"`
+	// FindingIDs lists the Finding.ID values that contribute to this path.
+	FindingIDs []string `json:"finding_ids"`
+	// Description is the human-readable summary of the attack scenario.
+	Description string `json:"description"`
+}
+
 // AuditSummary aggregates counts and totals across all findings.
 type AuditSummary struct {
 	TotalFindings                int     `json:"total_findings"`
@@ -65,9 +91,16 @@ type AuditSummary struct {
 	MediumFindings               int     `json:"medium_findings"`
 	LowFindings                  int     `json:"low_findings"`
 	TotalEstimatedMonthlySavings float64 `json:"total_estimated_monthly_savings_usd"`
-	// RiskScore is the highest risk_chain_score across all correlated findings.
-	// 0 means no risk chain was detected. Populated only for Kubernetes audits.
+	// RiskScore is the highest score across all detected attack paths or risk
+	// chains (attack paths take precedence when present). 0 means no correlation
+	// was detected. Populated only for Kubernetes audits.
 	RiskScore int `json:"risk_score"`
+	// AttackPaths lists multi-layer compound attack paths ordered by descending
+	// score. Populated only when ShowRiskChains is requested (omitted otherwise).
+	AttackPaths []AttackPath `json:"attack_paths,omitempty"`
+	// RiskChains groups findings by compound risk chain, ordered by descending
+	// score. Populated only when ShowRiskChains is requested (omitted otherwise).
+	RiskChains []RiskChain `json:"risk_chains,omitempty"`
 }
 
 // AuditReport is the top-level, SaaS-compatible output of any audit run.
