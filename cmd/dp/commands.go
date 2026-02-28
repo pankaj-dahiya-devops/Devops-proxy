@@ -14,6 +14,7 @@ import (
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/engine"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/models"
 	dpoutput "github.com/pankaj-dahiya-devops/Devops-proxy/internal/output"
+	dprender "github.com/pankaj-dahiya-devops/Devops-proxy/internal/render"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/policy"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/providers/aws/common"
 	"github.com/pankaj-dahiya-devops/Devops-proxy/internal/version"
@@ -853,6 +854,16 @@ func printClusterInspect(w io.Writer, data *kube.ClusterData) {
 	fmt.Fprintf(w, "Namespaces:  %d\n", len(data.Namespaces))
 }
 
+// validateExplainFlags returns an error when --explain-path is set without
+// --show-risk-chains. Attack paths are only computed when ShowRiskChains is
+// enabled, so --explain-path requires it as a prerequisite.
+func validateExplainFlags(explainScore int, showRiskChains bool) error {
+	if explainScore > 0 && !showRiskChains {
+		return fmt.Errorf("--explain-path requires --show-risk-chains")
+	}
+	return nil
+}
+
 // newKubernetesAuditCmd implements dp kubernetes audit.
 func newKubernetesAuditCmd() *cobra.Command {
 	var (
@@ -865,6 +876,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 		excludeSystem  bool
 		minRiskScore   int
 		showRiskChains bool
+		explainScore   int
 	)
 
 	cmd := &cobra.Command{
@@ -875,6 +887,10 @@ func newKubernetesAuditCmd() *cobra.Command {
 			policyCfg, err := loadPolicyFile(policyPath)
 			if err != nil {
 				return fmt.Errorf("load policy: %w", err)
+			}
+
+			if err := validateExplainFlags(explainScore, showRiskChains); err != nil {
+				return err
 			}
 
 			provider := kube.NewDefaultKubeClientProvider()
@@ -916,6 +932,21 @@ func newKubernetesAuditCmd() *cobra.Command {
 				}
 			}
 
+			// explain-path mode: render a single attack path and exit early.
+			// No normal table, no policy enforcement, no exit-code-1 logic.
+			if explainScore > 0 {
+				path := dprender.FindPathByScore(report.Summary.AttackPaths, explainScore)
+				if outputFmt == "json" {
+					return dprender.WriteExplainJSON(os.Stdout, path, explainScore)
+				}
+				if path == nil {
+					fmt.Fprintf(os.Stdout, "No attack path found with score %d\n", explainScore)
+					return nil
+				}
+				dprender.RenderAttackPathExplanation(os.Stdout, *path, report.Findings)
+				return nil
+			}
+
 			if err := renderKubernetesAuditOutput(os.Stdout, report, outputFmt, summary, color, showRiskChains); err != nil {
 				return err
 			}
@@ -942,6 +973,7 @@ func newKubernetesAuditCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&excludeSystem, "exclude-system", false, "Exclude findings from system namespaces (kube-system, kube-public, kube-node-lease)")
 	cmd.Flags().IntVar(&minRiskScore, "min-risk-score", 0, "Only include findings with a risk chain score >= this value (0 = include all)")
 	cmd.Flags().BoolVar(&showRiskChains, "show-risk-chains", false, "Group findings by risk chain in table output; add risk_chains to JSON output")
+	cmd.Flags().IntVar(&explainScore, "explain-path", 0, "Print structured breakdown of the attack path with this score (requires --show-risk-chains)")
 
 	return cmd
 }

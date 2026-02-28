@@ -497,6 +497,69 @@ Example JSON output with attack paths:
 }
 ```
 
+#### Explain Attack Path (Phase 8)
+
+Use `--explain-path <score>` to print a structured, human-readable breakdown of a single attack path. The flag requires `--show-risk-chains` because attack paths are only computed when risk chain detection is enabled.
+
+```bash
+# Print the structured breakdown for the highest-risk attack path (score 96)
+./dp kubernetes audit --show-risk-chains --explain-path 96
+
+# Same breakdown in JSON format
+./dp kubernetes audit --show-risk-chains --explain-path 96 --output json | jq .
+
+# Score not found — prints a "not found" message instead of the table
+./dp kubernetes audit --show-risk-chains --explain-path 123
+
+# Error: --explain-path requires --show-risk-chains
+./dp kubernetes audit --explain-path 96
+```
+
+Example table output:
+
+```
+ATTACK PATH (Score: 96)
+Description: Externally reachable workload can assume over-permissive cloud IAM role (cross-plane privilege escalation).
+Layers: Network Exposure → Workload Compromise → Cloud IAM Escalation
+
+Findings (4):
+
+  ✓ EKS_NODE_ROLE_OVERPERMISSIVE
+    - my-cluster
+
+  ✓ EKS_SERVICEACCOUNT_NO_IRSA
+    - default (prod)
+
+  ✓ K8S_POD_RUN_AS_ROOT
+    - web-pod (prod)
+
+  ✓ K8S_SERVICE_PUBLIC_LOADBALANCER
+    - web-svc (prod)
+```
+
+Example JSON output (`--output json`):
+
+```json
+{
+  "attack_path": {
+    "score": 96,
+    "layers": ["Network Exposure", "Workload Compromise", "Cloud IAM Escalation"],
+    "finding_ids": ["..."],
+    "description": "Externally reachable workload can assume over-permissive cloud IAM role (cross-plane privilege escalation)."
+  }
+}
+```
+
+When no attack path matches the requested score:
+
+```json
+{
+  "error": "No attack path found with score 123"
+}
+```
+
+In explain mode the normal audit table, policy enforcement, and exit-code-1 logic are **skipped** — the command exits 0 after rendering the explanation.
+
 #### Filtering by Risk Score (Phase 4C)
 
 Use `--min-risk-score` to narrow the report to only findings that participate in a risk chain at or above the given threshold:
@@ -943,6 +1006,7 @@ Unit tests across rule engine, policy layer, data-protection rules, security rul
 - [x] Phase 6.2: Strict rule-scoped filtering — dual detection/collection index design; FindingIDs contain only allowed primary rule IDs per path
 - [x] Phase 7A: PATH 4 (score 94) — EKS Control Plane Exposure; cluster-scoped; requires `EKS_PUBLIC_ENDPOINT_ENABLED` + (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`) + `EKS_CONTROL_PLANE_LOGGING_DISABLED`; strict cluster-only filtering; 7 new tests
 - [x] Phase 7B: PATH 5 (score 96) — Cross-Cloud Identity Escalation; per-namespace + cluster IAM; requires `K8S_SERVICE_PUBLIC_LOADBALANCER` + privilege + identity weakness + cluster (`EKS_NODE_ROLE_OVERPERMISSIVE` OR `EKS_IAM_ROLE_WILDCARD`); strict 8-rule filtering; 8 new tests
+- [x] Phase 8: `--explain-path <score>` flag; new `internal/render` package (`FindPathByScore`, `RenderAttackPathExplanation`, `WriteExplainJSON`); strict filtering from `path.FindingIDs`; early return in explain mode (exit 0, no table/policy/exit-code-1); requires `--show-risk-chains`
 - [ ] LLM summarization: findings → human-readable report
 - [ ] Terraform plan analysis module
 - [ ] Azure provider module

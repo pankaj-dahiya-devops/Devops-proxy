@@ -1079,3 +1079,46 @@ func TestAuditAllCmd_FileFlagRegistered(t *testing.T) {
 		t.Errorf("--file default = %q; want empty string", flag.DefValue)
 	}
 }
+
+// ── Phase 8: --explain-path flag and validation ───────────────────────────────
+
+// TestCLI_ExplainRequiresShowRiskChains verifies the validateExplainFlags
+// helper: --explain-path > 0 without --show-risk-chains must return an error;
+// all other combinations must return nil.
+func TestCLI_ExplainRequiresShowRiskChains(t *testing.T) {
+	// --explain-path set, --show-risk-chains false → must error.
+	if err := validateExplainFlags(98, false); err == nil {
+		t.Error("validateExplainFlags(98, false) = nil; want non-nil error")
+	} else if !strings.Contains(err.Error(), "--explain-path requires --show-risk-chains") {
+		t.Errorf("unexpected error message: %q", err.Error())
+	}
+
+	// --explain-path set, --show-risk-chains true → no error.
+	if err := validateExplainFlags(98, true); err != nil {
+		t.Errorf("validateExplainFlags(98, true) = %v; want nil", err)
+	}
+
+	// --explain-path zero (not set) → no error regardless of showRiskChains.
+	if err := validateExplainFlags(0, false); err != nil {
+		t.Errorf("validateExplainFlags(0, false) = %v; want nil", err)
+	}
+	if err := validateExplainFlags(0, true); err != nil {
+		t.Errorf("validateExplainFlags(0, true) = %v; want nil", err)
+	}
+}
+
+// TestKubernetesAuditCmd_ExplainPathFlag_Registered verifies that the
+// --explain-path flag is declared with default value 0 and type int.
+func TestKubernetesAuditCmd_ExplainPathFlag_Registered(t *testing.T) {
+	cmd := newKubernetesAuditCmd()
+	flag := cmd.Flags().Lookup("explain-path")
+	if flag == nil {
+		t.Fatal("--explain-path flag not registered on kubernetes audit command")
+	}
+	if flag.DefValue != "0" {
+		t.Errorf("--explain-path default = %q; want 0", flag.DefValue)
+	}
+	if flag.Value.Type() != "int" {
+		t.Errorf("--explain-path type = %q; want int", flag.Value.Type())
+	}
+}
